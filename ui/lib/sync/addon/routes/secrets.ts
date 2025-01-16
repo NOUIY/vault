@@ -7,38 +7,15 @@ import Route from '@ember/routing/route';
 import { service } from '@ember/service';
 
 import type RouterService from '@ember/routing/router-service';
-import type StoreService from 'vault/services/store';
-import type AdapterError from '@ember-data/adapter';
-
-interface ActivationFlagsResponse {
-  data: {
-    activated: Array<string>;
-    unactivated: Array<string>;
-  };
-}
+import type FlagService from 'vault/services/flags';
 
 export default class SyncSecretsRoute extends Route {
-  @service declare readonly router: RouterService;
-  @service declare readonly store: StoreService;
+  @service('app-router') declare readonly router: RouterService;
+  @service declare readonly flags: FlagService;
 
-  async fetchActivatedFeatures() {
-    return await this.store
-      .adapterFor('application')
-      .ajax('/v1/sys/activation-flags', 'GET')
-      .then((resp: ActivationFlagsResponse) => {
-        return resp.data?.activated;
-      })
-      .catch((error: AdapterError) => {
-        return error;
-      });
-  }
-
-  async model() {
-    const activatedFeatures = await this.fetchActivatedFeatures();
-    const { isAdapterError } = activatedFeatures;
+  model() {
     return {
-      activatedFeatures: isAdapterError ? [] : activatedFeatures,
-      adapterError: isAdapterError ? activatedFeatures : null,
+      activatedFeatures: this.flags.activatedFlags,
     };
   }
 

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/fatih/structs"
+	"github.com/hashicorp/vault/sdk/helper/cryptoutil"
 )
 
 // Tests converting back and forth between a CertBundle and a ParsedCertBundle.
@@ -465,7 +466,7 @@ vitin0L6nprauWkKO38XgM4T75qKZpqtiOcT
 }
 
 func TestGetPublicKeySize(t *testing.T) {
-	rsa, err := rsa.GenerateKey(rand.Reader, 3072)
+	rsa, err := cryptoutil.GenerateRSAKey(rand.Reader, 3072)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +736,7 @@ func setCerts() {
 
 	// RSA generation
 	{
-		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		key, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 		if err != nil {
 			panic(err)
 		}
@@ -864,7 +865,7 @@ func setCerts() {
 
 func TestComparePublicKeysAndType(t *testing.T) {
 	rsa1 := genRsaKey(t).Public()
-	rsa2 := genRsaKey(t).Public()
+	rsa := genRsaKey(t).Public()
 	eddsa1 := genEdDSA(t).Public()
 	eddsa2 := genEdDSA(t).Public()
 	ed25519_1, _ := genEd25519Key(t)
@@ -881,7 +882,7 @@ func TestComparePublicKeysAndType(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "RSA_Equal", args: args{key1Iface: rsa1, key2Iface: rsa1}, want: true, wantErr: false},
-		{name: "RSA_NotEqual", args: args{key1Iface: rsa1, key2Iface: rsa2}, want: false, wantErr: false},
+		{name: "RSA_NotEqual", args: args{key1Iface: rsa1, key2Iface: rsa}, want: false, wantErr: false},
 		{name: "EDDSA_Equal", args: args{key1Iface: eddsa1, key2Iface: eddsa1}, want: true, wantErr: false},
 		{name: "EDDSA_NotEqual", args: args{key1Iface: eddsa1, key2Iface: eddsa2}, want: false, wantErr: false},
 		{name: "ED25519_Equal", args: args{key1Iface: ed25519_1, key2Iface: ed25519_1}, want: true, wantErr: false},
@@ -915,6 +916,10 @@ func TestNotAfterValues(t *testing.T) {
 
 	if PermitNotAfterBehavior != 2 {
 		t.Fatalf("Expected PermitNotAfterBehavior=%v to have value 2", PermitNotAfterBehavior)
+	}
+
+	if AlwaysEnforceErr != 3 {
+		t.Fatalf("Expected AlwaysEnforceErr=%v to have value 3", AlwaysEnforceErr)
 	}
 }
 
@@ -1006,8 +1011,103 @@ func TestBasicConstraintExtension(t *testing.T) {
 	})
 }
 
+// TestIgnoreCSRSigning Make sure we validate the CSR by default and that we can override
+// the behavior disabling CSR signature checks
+func TestIgnoreCSRSigning(t *testing.T) {
+	t.Parallel()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("failed generating ca key: %v", err)
+	}
+	subjKeyID, err := GetSubjKeyID(caKey)
+	if err != nil {
+		t.Fatalf("failed generating ca subject key id: %v", err)
+	}
+	caCertTemplate := &x509.Certificate{
+		Subject: pkix.Name{
+			CommonName: "root.localhost",
+		},
+		SubjectKeyId:          subjKeyID,
+		DNSNames:              []string{"root.localhost"},
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SerialNumber:          big.NewInt(mathrand.Int63()),
+		NotBefore:             time.Now().Add(-30 * time.Second),
+		NotAfter:              time.Now().Add(262980 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caBytes, err := x509.CreateCertificate(rand.Reader, caCertTemplate, caCertTemplate, caKey.Public(), caKey)
+	if err != nil {
+		t.Fatalf("failed creating ca certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caBytes)
+	if err != nil {
+		t.Fatalf("failed parsing ca certificate: %v", err)
+	}
+
+	signingBundle := &CAInfoBundle{
+		ParsedCertBundle: ParsedCertBundle{
+			PrivateKeyType:   ECPrivateKey,
+			PrivateKey:       caKey,
+			CertificateBytes: caBytes,
+			Certificate:      caCert,
+			CAChain:          nil,
+		},
+		URLs: &URLEntries{},
+	}
+
+	key := genEdDSA(t)
+	csr := &x509.CertificateRequest{
+		PublicKeyAlgorithm: x509.ECDSA,
+		PublicKey:          key.Public(),
+		Subject: pkix.Name{
+			CommonName: "test.dadgarcorp.com",
+		},
+	}
+	t.Run(fmt.Sprintf("ignore-csr-disabled"), func(t *testing.T) {
+		params := &CreationParameters{
+			URLs: &URLEntries{},
+		}
+		data := &CreationBundle{
+			Params:        params,
+			SigningBundle: signingBundle,
+			CSR:           csr,
+		}
+
+		_, err := SignCertificate(data)
+		if err == nil {
+			t.Fatalf("should have failed signing csr with ignore csr signature disabled")
+		}
+		if !strings.Contains(err.Error(), "request signature invalid") {
+			t.Fatalf("expected error to contain 'request signature invalid': got: %v", err)
+		}
+	})
+
+	t.Run(fmt.Sprintf("ignore-csr-enabled"), func(t *testing.T) {
+		params := &CreationParameters{
+			IgnoreCSRSignature: true,
+			URLs:               &URLEntries{},
+		}
+		data := &CreationBundle{
+			Params:        params,
+			SigningBundle: signingBundle,
+			CSR:           csr,
+		}
+
+		cert, err := SignCertificate(data)
+		if err != nil {
+			t.Fatalf("failed to sign certificate: %v", err)
+		}
+
+		if err := cert.Verify(); err != nil {
+			t.Fatalf("signature verification failed: %v", err)
+		}
+	})
+}
+
 func genRsaKey(t *testing.T) *rsa.PrivateKey {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}

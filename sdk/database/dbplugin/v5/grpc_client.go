@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/ptypes"
@@ -199,11 +201,12 @@ func updateUserReqToProto(req UpdateUserRequest) (*proto.UpdateUserRequest, erro
 	}
 
 	rpcReq := &proto.UpdateUserRequest{
-		Username:       req.Username,
-		CredentialType: int32(req.CredentialType),
-		Password:       password,
-		PublicKey:      publicKey,
-		Expiration:     expiration,
+		Username:            req.Username,
+		CredentialType:      int32(req.CredentialType),
+		Password:            password,
+		PublicKey:           publicKey,
+		Expiration:          expiration,
+		SelfManagedPassword: req.SelfManagedPassword,
 	}
 	return rpcReq, nil
 }
@@ -269,7 +272,7 @@ func deleteUserRespFromProto(rpcResp *proto.DeleteUserResponse) (DeleteUserRespo
 }
 
 func (c gRPCClient) Type() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := getContextWithTimeout(pluginutil.PluginGRPCTimeoutType)
 	defer cancel()
 
 	typeResp, err := c.client.Type(ctx, &proto.Empty{})
@@ -283,7 +286,7 @@ func (c gRPCClient) Type() (string, error) {
 }
 
 func (c gRPCClient) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := getContextWithTimeout(pluginutil.PluginGRPCTimeoutClose)
 	defer cancel()
 
 	_, err := c.client.Close(ctx, &proto.Empty{})
@@ -294,4 +297,12 @@ func (c gRPCClient) Close() error {
 		return err
 	}
 	return nil
+}
+
+func getContextWithTimeout(env string) (context.Context, context.CancelFunc) {
+	timeout := 1 // default timeout
+	if envTimeout, err := strconv.Atoi(os.Getenv(env)); err == nil && envTimeout > 0 {
+		timeout = envTimeout
+	}
+	return context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 }

@@ -9,7 +9,7 @@ import Route from '@ember/routing/route';
 import { service } from '@ember/service';
 
 export default Route.extend({
-  router: service(),
+  router: service('app-router'),
   store: service(),
   model() {
     const replicationMode = this.paramsFor('mode').replication_mode;
@@ -18,10 +18,10 @@ export default Route.extend({
       cluster: this.modelFor('mode'),
       canAddSecondary: this.store
         .findRecord('capabilities', `sys/replication/${replicationMode}/primary/secondary-token`)
-        .then((c) => c.get('canUpdate')),
+        .then((c) => c.canUpdate),
       canRevokeSecondary: this.store
         .findRecord('capabilities', `sys/replication/${replicationMode}/primary/revoke-secondary`)
-        .then((c) => c.get('canUpdate')),
+        .then((c) => c.canUpdate),
     }).then(({ cluster, canAddSecondary, canRevokeSecondary }) => {
       setProperties(cluster, {
         canRevokeSecondary,

@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hashicorp/cli"
-	"github.com/hashicorp/vault/command/server"
+	"github.com/hashicorp/vault/helper/constants"
+	pkihelper "github.com/hashicorp/vault/helper/testhelpers/pki"
 	"github.com/hashicorp/vault/vault/diagnose"
 )
 
@@ -31,8 +33,55 @@ func testOperatorDiagnoseCommand(tb testing.TB) *OperatorDiagnoseCommand {
 	}
 }
 
+func generateTLSConfigOk(t *testing.T, ca pkihelper.LeafWithIntermediary) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "tls_config_ok.hcl")
+
+	templateFile := "./server/test-fixtures/tls_config_ok.hcl"
+	contents, err := os.ReadFile(templateFile)
+	if err != nil {
+		t.Fatalf("failed to read file %s: %v", templateFile, err)
+	}
+	contents = []byte(strings.ReplaceAll(string(contents), "{REPLACE_LEAF_CERT_FILE}", ca.Leaf.CertFile))
+	contents = []byte(strings.ReplaceAll(string(contents), "{REPLACE_LEAF_KEY_FILE}", ca.Leaf.KeyFile))
+
+	err = os.WriteFile(configPath, contents, 0o644)
+	if err != nil {
+		t.Fatalf("failed to write file %s: %v", configPath, err)
+	}
+
+	return configPath
+}
+
+func generateTransitTLSCheck(t *testing.T, ca pkihelper.LeafWithIntermediary) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "diagnose_seal_transit_tls_check.hcl")
+
+	templateFile := "./server/test-fixtures/diagnose_seal_transit_tls_check.hcl"
+	contents, err := os.ReadFile(templateFile)
+	if err != nil {
+		t.Fatalf("failed to read file %s: %v", templateFile, err)
+	}
+	contents = []byte(strings.ReplaceAll(string(contents), "{REPLACE_LEAF_CERT_FILE}", ca.Leaf.CertFile))
+	contents = []byte(strings.ReplaceAll(string(contents), "{REPLACE_LEAF_KEY_FILE}", ca.Leaf.KeyFile))
+	contents = []byte(strings.ReplaceAll(string(contents), "{REPLACE_COMBINED_CA_CHAIN_FILE}", ca.CombinedCaFile))
+
+	err = os.WriteFile(configPath, contents, 0o644)
+	if err != nil {
+		t.Fatalf("failed to write file %s: %v", configPath, err)
+	}
+
+	return configPath
+}
+
 func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 	t.Parallel()
+	testca := pkihelper.GenerateCertWithIntermediaryRoot(t)
+	tlsConfigOkConfigFile := generateTLSConfigOk(t, testca)
+	transitTLSCheckConfigFile := generateTransitTLSCheck(t, testca)
+
 	cases := []struct {
 		name     string
 		args     []string
@@ -41,7 +90,7 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 		{
 			"diagnose_ok",
 			[]string{
-				"-config", "./server/test-fixtures/config_diagnose_ok.hcl",
+				"-config", "./server/test-fixtures/config_diagnose_ok_singleseal.hcl",
 			},
 			[]*diagnose.Result{
 				{
@@ -349,7 +398,7 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 		{
 			"diagnose_listener_config_ok",
 			[]string{
-				"-config", "./server/test-fixtures/tls_config_ok.hcl",
+				"-config", tlsConfigOkConfigFile,
 			},
 			[]*diagnose.Result{
 				{
@@ -461,7 +510,7 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 		{
 			"diagnose_seal_transit_tls_check_fail",
 			[]string{
-				"-config", "./server/test-fixtures/diagnose_seal_transit_tls_check.hcl",
+				"-config", transitTLSCheckConfigFile,
 			},
 			[]*diagnose.Result{
 				{
@@ -611,9 +660,9 @@ func TestOperatorDiagnoseCommand_Run(t *testing.T) {
 		for _, tc := range cases {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
-				if tc.name == "diagnose_ok" && server.IsMultisealSupported() {
+				if tc.name == "diagnose_ok" && constants.IsEnterprise {
 					t.Skip("Test not valid in ENT")
-				} else if tc.name == "diagnose_ok_multiseal" && !server.IsMultisealSupported() {
+				} else if tc.name == "diagnose_ok_multiseal" && !constants.IsEnterprise {
 					t.Skip("Test not valid in community edition")
 				} else {
 					t.Parallel()

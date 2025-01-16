@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (c) HashiCorp, Inc.
 # SPDX-License-Identifier: BUSL-1.1
 
@@ -66,7 +66,7 @@ main() {
   fi
 
   # Return our seal configuration attributes as JSON
-  cat <<EOF
+  cat << EOF
 {
   "lib": "${so}",
   "slot": "${slot}",

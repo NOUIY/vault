@@ -1,12 +1,12 @@
 ---
 layout: docs
-page_title: Entropy Augmentation - Configuration
+page_title: Configure entropy augmentation
 description: >-
-  Entropy augmentation enables Vault to sample entropy from external
-  cryptographic modules.
+  Configure entropy augmentation to sample entropy from external cryptographic
+  modules when sealing Vault.
 ---
 
-# `Entropy augmentation` seal
+# Configure entropy augmentation
 
 Entropy augmentation enables Vault to sample entropy from external cryptographic modules.
 Sourcing external entropy is done by configuring a supported [Seal](/vault/docs/configuration/seal) type which
@@ -59,3 +59,5 @@ These parameters apply to the `entropy` stanza in the Vault configuration file:
 - `mode` `(string: <required>)`: The mode determines which Vault operations requiring
   entropy will sample entropy from the external source. Currently, the only mode supported
   is `augmentation` which sources entropy for [Critical Security Parameters (CSPs)](/vault/docs/enterprise/entropy-augmentation#critical-security-parameters-csps).
+- `seal_name` `(string: '')`: Specifies which seal (by name) in a   [Seal HA](/vault/docs/concepts/seal#seal-high-availability) setup to use to  source entropy. 
+  By default, Vault sources entropy from the first available seal moving from lowest to highest priority.

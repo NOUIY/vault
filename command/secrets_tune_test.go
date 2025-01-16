@@ -195,6 +195,8 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 				"-identity-token-key", "default",
 				"-listing-visibility", "unauth",
 				"-plugin-version", version,
+				"-delegated-auth-accessors", "authAcc1,authAcc2",
+				"-trim-request-trailing-slashes=true",
 				"mount_tune_integration/",
 			})
 			if exp := 0; code != exp {
@@ -231,6 +233,9 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 			if exp := 3600; mountInfo.Config.MaxLeaseTTL != exp {
 				t.Errorf("expected %d to be %d", mountInfo.Config.MaxLeaseTTL, exp)
 			}
+			if !mountInfo.Config.TrimRequestTrailingSlashes {
+				t.Errorf("expected trim_request_trailing_slashes to be enabled")
+			}
 			if diff := deep.Equal([]string{"authorization", "www-authentication"}, mountInfo.Config.PassthroughRequestHeaders); len(diff) > 0 {
 				t.Errorf("Failed to find expected values for PassthroughRequestHeaders. Difference is: %v", diff)
 			}
@@ -245,6 +250,9 @@ func TestSecretsTuneCommand_Run(t *testing.T) {
 			}
 			if diff := deep.Equal([]string{"key1,key2"}, mountInfo.Config.AllowedManagedKeys); len(diff) > 0 {
 				t.Errorf("Failed to find expected values in AllowedManagedKeys. Difference is: %v", diff)
+			}
+			if diff := deep.Equal([]string{"authAcc1,authAcc2"}, mountInfo.Config.DelegatedAuthAccessors); len(diff) > 0 {
+				t.Errorf("Failed to find expected values in DelegatedAuthAccessors. Difference is: %v", diff)
 			}
 			if diff := deep.Equal("default", mountInfo.Config.IdentityTokenKey); len(diff) > 0 {
 				t.Errorf("Failed to find expected values in IdentityTokenKey. Difference is: %v", diff)

@@ -1,10 +1,11 @@
 ---
 layout: docs
-page_title: Google Cloud Platform Secret Manager - Secrets Sync Destination
-description: The Google Cloud Platform Secret Manager destination syncs secrets from Vault to GCP.
+page_title: Sync secrets from Vault to GCP Secret Manager
+description: >-
+  Automatically sync and unsync the secrets from Vault to GCP Secret Manager to centralize visibility and control of secrets lifecycle management.
 ---
 
-# Google Cloud Platform Secret Manager
+# Sync secrets from Vault to GCP Secret Manager
 
 The Google Cloud Platform (GCP) Secret Manager sync destination allows Vault to safely synchronize secrets to your GCP projects.
 This is a low footprint option that enables your applications to benefit from Vault-managed secrets without requiring them
@@ -28,6 +29,7 @@ Prerequisites:
   ```shell-session
   $ vault write sys/sync/destinations/gcp-sm/my-dest \
       credentials='@path/to/credentials.json'
+      replication_locations='us-east1,us-west1'
   ```
 
   **Output:**
@@ -37,7 +39,7 @@ Prerequisites:
   ```plaintext
   Key                   Value
   ---                   -----
-  connection_details    map[credentials:*****]
+  connection_details    map[credentials:***** replication_locations:us-east1,us-west1]
   name                  my-dest
   type                  gcp-sm
   ```
@@ -117,6 +119,16 @@ Moving forward, any modification on the Vault secret will be propagated in near 
 counterpart. Creating a new secret version in Vault will create a new version in GCP Secret Manager. Deleting the secret
 or the association in Vault will delete the secret in your GCP project as well.
 
+### Replication policy
+
+GCP can target specific geographic regions to provide strict control on where
+your applications store data and sync secrets. You can target specific GCP 
+regions for each sync destinations during creation which will limit where Vault writes 
+secrets. 
+
+Regardless of the region limits on writes, synced secrets are always readable 
+globally when the client has the required permissions.
+
 ## Permissions
 
 The credentials given to Vault must have the following permissions to synchronize secrets:
@@ -124,14 +136,9 @@ The credentials given to Vault must have the following permissions to synchroniz
 ```shell-session
 secretmanager.secrets.create
 secretmanager.secrets.delete
-secretmanager.secrets.get
-secretmanager.secrets.list
 secretmanager.secrets.update
-secretmanager.versions.access
 secretmanager.versions.add
-secretmanager.versions.destroy
-secretmanager.versions.get
-secretmanager.versions.list
+secretmanager.versions.destroy 
 ```
 
 ## Provision service account
@@ -159,9 +166,10 @@ to provision a GCP Service Account with the appropriate policies.
       // Environment Variables
       // GOOGLE_REGION (optional)
       // GOOGLE_PROJECT
-      // GOOGLE_CREDENTIALS	(The path to a service account key file with the
-      //				        "Service Account Admin", "Service Account Key
-      //					    Admin", and "Security Admin" roles attached)
+      // GOOGLE_CREDENTIALS (The path to a service account key file with the
+      //                    "Service Account Admin", "Service Account Key Admin",
+      //                    "Secret Manager Admin", and "Project IAM Admin" roles
+      //                    attached)
   }
 
   data "google_client_config" "config" {}
@@ -263,6 +271,55 @@ you can set the `project_id` parameter to the target project to sync secrets wit
 This overrides the project ID derived from the service account JSON credentials or application
 default credentials. The service account must be [authorized](https://cloud.google.com/iam/docs/service-account-overview#locations)
 to perform Secret Manager actions in the target project.
+
+## Access management
+
+You can allow or restrict access to secrets based on
+[IAM conditions](https://cloud.google.com/iam/docs/conditions-resource-attributes#resource-name)
+against the fully-qualified resource name. For secrets in Secret Manager, a fully-qualified resource name must have the following
+format:
+
+  `projects/<project_number>/secrets/<secret_name>`
+
+<Tip title="Use the project number, not the project ID"> 
+
+  The project **number** is not the same as the project **ID**. Project numbers
+  are **numeric** while project IDs are **alphanumeric**. They can be found on
+  the Project info panel in the web dashboard or on the Welcome screen.
+
+</Tip>
+
+For example, the default secret name template prepends the word `vault` to the
+beginning of secret names. To prevent Vault from modifying secrets that were not
+created by a sync operation, you can use a role binding against the resource
+name with the `startsWith` condition:
+
+  <CodeBlockConfig hideClipboard>
+
+    resource.name.startsWith("projects/<project_number>/secrets/vault")
+
+  </CodeBlockConfig>
+
+To prevent out-of-band overwrites, simply add a negative condition with `!` on any
+write-access role bindings not being used by Vault that contain Secret Manager permissions:
+
+  <CodeBlockConfig hideClipboard>
+
+    !(resource.name.startsWith("projects/<project_number>/secrets/vault"))
+
+  </CodeBlockConfig>
+
+To add conditions to IAM principles in GCP, click "+ADD IAM CONDITION" on the **Assign Roles** screen.
+
+![Assign Roles screen in GCP with the "+ADD IAM CONDITION" link circled in red](/img/gcp-add-iam-conditions_light.png#light-theme-only)
+![Assign Roles screen in GCP with the "+ADD IAM CONDITION" link circled in red](/img/gcp-add-iam-conditions_dark.png#dark-theme-only)
+
+<Tip title="Refer to Google's Overview of IAM Conditions documentation"> 
+
+  [Google's documentation](https://cloud.google.com/iam/docs/conditions-overview) on IAM Conditions provides
+  further information on how they work and how they should be used, as well as their limits.
+
+</Tip>
 
 ## API
 

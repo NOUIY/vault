@@ -10,7 +10,7 @@ import { setupMirage } from 'ember-cli-mirage/test-support';
 import { render, click, fillIn } from '@ember/test-helpers';
 import hbs from 'htmlbars-inline-precompile';
 import sinon from 'sinon';
-import { setRunOptions } from 'ember-a11y-testing/test-support';
+import { ldapRoleID } from 'vault/adapters/ldap/role';
 
 module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (hooks) {
   setupRenderingTest(hooks);
@@ -30,7 +30,8 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
     this.newModel = this.store.createRecord('ldap/role', { backend: 'ldap-test' });
 
     ['static', 'dynamic'].forEach((type) => {
-      this[`${type}RoleData`] = this.server.create('ldap-role', type, { name: `${type}-role` });
+      const name = `${type}-role`;
+      this[`${type}RoleData`] = this.server.create('ldap-role', type, { name, id: ldapRoleID(type, name) });
       this.store.pushPayload('ldap/role', {
         modelName: 'ldap/role',
         backend: 'ldap-test',
@@ -41,9 +42,11 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
 
     this.breadcrumbs = [
       { label: 'ldap', route: 'overview' },
-      { label: 'roles', route: 'roles' },
-      { label: 'create' },
+      { label: 'Roles', route: 'roles' },
+      { label: 'Create' },
     ];
+
+    this.fetchModel = (type, name) => this.store.peekRecord('ldap/role', ldapRoleID(type, name));
 
     this.renderComponent = () => {
       return render(
@@ -51,12 +54,6 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
         { owner: this.engine }
       );
     };
-    setRunOptions({
-      rules: {
-        // TODO: Fix JsonEditor component
-        label: { enabled: false },
-      },
-    });
   });
 
   test('it should display different form fields based on type', async function (assert) {
@@ -107,14 +104,14 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
       });
     };
 
-    this.model = this.store.peekRecord('ldap/role', 'static-role');
+    this.model = this.fetchModel('static', 'static-role');
     await this.renderComponent();
     assert.dom('[data-test-radio-card="static"]').isDisabled('Type selection is disabled when editing');
     assert.dom('[data-test-input="name"]').isDisabled('Name field is disabled when editing');
     checkFields(['name', 'dn', 'username']);
     checkTtl(['rotation_period']);
 
-    this.model = this.store.peekRecord('ldap/role', 'dynamic-role');
+    this.model = this.fetchModel('dynamic', 'dynamic-role');
     await this.renderComponent();
     checkFields(['name', 'username_template']);
     checkTtl(['default_ttl', 'max_ttl']);
@@ -122,7 +119,7 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
   });
 
   test('it should go back to list route and clean up model on cancel', async function (assert) {
-    this.model = this.store.peekRecord('ldap/role', 'static-role');
+    this.model = this.fetchModel('static', 'static-role');
     const spy = sinon.spy(this.model, 'rollbackAttributes');
 
     await this.renderComponent();
@@ -188,7 +185,7 @@ module('Integration | Component | ldap | Page::Role::CreateAndEdit', function (h
       assert.deepEqual(expected, data, 'POST request made to save role with correct properties');
     });
 
-    this.model = this.store.peekRecord('ldap/role', 'static-role');
+    this.model = this.fetchModel('static', 'static-role');
     await this.renderComponent();
 
     await fillIn('[data-test-input="dn"]', 'foo');

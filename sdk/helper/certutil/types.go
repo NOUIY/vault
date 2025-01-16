@@ -171,7 +171,7 @@ func GetPrivateKeyTypeFromPublicKey(pubKey crypto.PublicKey) PrivateKeyType {
 		return RSAPrivateKey
 	case *ecdsa.PublicKey:
 		return ECPrivateKey
-	case *ed25519.PublicKey:
+	case ed25519.PublicKey:
 		return Ed25519PrivateKey
 	default:
 		return UnknownPrivateKey
@@ -708,9 +708,11 @@ const (
 	ErrNotAfterBehavior NotAfterBehavior = iota
 	TruncateNotAfterBehavior
 	PermitNotAfterBehavior
+	AlwaysEnforceErr
 )
 
 var notAfterBehaviorNames = map[NotAfterBehavior]string{
+	AlwaysEnforceErr:         "always_enforce_err",
 	ErrNotAfterBehavior:      "err",
 	TruncateNotAfterBehavior: "truncate",
 	PermitNotAfterBehavior:   "permit",
@@ -805,8 +807,15 @@ type CreationParameters struct {
 	ForceAppendCaChain            bool
 
 	// Only used when signing a CA cert
-	UseCSRValues        bool
-	PermittedDNSDomains []string
+	UseCSRValues            bool
+	PermittedDNSDomains     []string
+	ExcludedDNSDomains      []string
+	PermittedIPRanges       []*net.IPNet
+	ExcludedIPRanges        []*net.IPNet
+	PermittedEmailAddresses []string
+	ExcludedEmailAddresses  []string
+	PermittedURIDomains     []string
+	ExcludedURIDomains      []string
 
 	// URLs to encode into the certificate
 	URLs *URLEntries
@@ -819,6 +828,11 @@ type CreationParameters struct {
 
 	// The explicit SKID to use; especially useful for cross-signing.
 	SKID []byte
+
+	// Ignore validating the CSR's signature. This should only be enabled if the
+	// sender of the CSR has proven proof of possession of the associated
+	// private key by some other means, otherwise keep this set to false.
+	IgnoreCSRSignature bool
 }
 
 type CreationBundle struct {

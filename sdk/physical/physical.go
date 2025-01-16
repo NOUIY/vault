@@ -60,6 +60,25 @@ type HABackend interface {
 	HAEnabled() bool
 }
 
+// RemovableNodeHABackend is used for HA backends that can remove nodes from
+// their cluster
+type RemovableNodeHABackend interface {
+	HABackend
+
+	// IsNodeRemoved checks if the node with the given ID has been removed.
+	// This will only be called on the active node.
+	IsNodeRemoved(ctx context.Context, nodeID string) (bool, error)
+
+	// NodeID returns the ID for this node
+	NodeID() string
+
+	// IsRemoved checks if this node has been removed
+	IsRemoved() bool
+
+	// RemoveSelf marks this node as being removed
+	RemoveSelf() error
+}
+
 // FencingHABackend is an HABackend which provides the additional guarantee that
 // each Lock it returns from LockWith is also a FencingLock. A FencingLock
 // provides a mechanism to retrieve a fencing token that can be included by
@@ -137,6 +156,16 @@ type ToggleablePurgemonster interface {
 type RedirectDetect interface {
 	// DetectHostAddr is used to detect the host address
 	DetectHostAddr() (string, error)
+}
+
+// MountTableLimitingBackend is an optional interface a Backend can implement
+// that allows it to support different entry size limits for mount-table-related
+// paths. It will only be called in Vault Enterprise.
+type MountTableLimitingBackend interface {
+	// RegisterMountTablePath informs the Backend that the given path represents
+	// part of the mount tables or related metadata. This allows the backend to
+	// apply different limits for this entry if configured to do so.
+	RegisterMountTablePath(path string)
 }
 
 type Lock interface {

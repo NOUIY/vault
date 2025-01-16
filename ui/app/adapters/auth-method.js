@@ -21,6 +21,8 @@ export default ApplicationAdapter.extend({
 
   findAll(store, type, sinceToken, snapshotRecordArray) {
     const isUnauthenticated = snapshotRecordArray?.adapterOptions?.unauthenticated;
+    // sys/internal/ui/mounts returns the actual value of the system TTL
+    // instead of '0' which just indicates the mount is using system defaults
     if (isUnauthenticated) {
       const url = `/${this.urlPrefix()}/internal/ui/mounts`;
       return this.ajax(url, 'GET', {
@@ -32,17 +34,35 @@ export default ApplicationAdapter.extend({
           };
         })
         .catch(() => {
-          return {
-            data: {},
-          };
+          return { data: {} };
         });
     }
+    // if authenticated, findAll will use GET sys/auth instead
     return this.ajax(this.url(), 'GET').catch((e) => {
       if (e instanceof AdapterError) {
         set(e, 'policyPath', 'sys/auth');
       }
       throw e;
     });
+  },
+
+  // findAll makes a network request and supplements the ember-data store with what the API returns.
+  // after upgrading to ember-data 5.3.2 the store was becoming cluttered with outdated records, so
+  // use query to refresh the store with each request. this is ideal for list views
+  query() {
+    const url = `/${this.urlPrefix()}/internal/ui/mounts`;
+    return this.ajax(url, 'GET')
+      .then((result) => {
+        return {
+          data: result.data.auth,
+        };
+      })
+      .catch((e) => {
+        if (e instanceof AdapterError) {
+          set(e, 'policyPath', 'sys/internal/ui/mounts');
+        }
+        throw e;
+      });
   },
 
   createRecord(store, type, snapshot) {

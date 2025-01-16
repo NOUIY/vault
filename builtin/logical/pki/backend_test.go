@@ -44,11 +44,13 @@ import (
 	"github.com/hashicorp/vault/builtin/credential/userpass"
 	"github.com/hashicorp/vault/builtin/logical/pki/issuing"
 	"github.com/hashicorp/vault/builtin/logical/pki/parsing"
+	"github.com/hashicorp/vault/builtin/logical/pki/pki_backend"
 	"github.com/hashicorp/vault/helper/testhelpers"
 	logicaltest "github.com/hashicorp/vault/helper/testhelpers/logical"
 	"github.com/hashicorp/vault/helper/testhelpers/teststorage"
 	vaulthttp "github.com/hashicorp/vault/http"
 	"github.com/hashicorp/vault/sdk/helper/certutil"
+	"github.com/hashicorp/vault/sdk/helper/cryptoutil"
 	"github.com/hashicorp/vault/sdk/helper/testhelpers/schema"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/hashicorp/vault/vault"
@@ -509,14 +511,14 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 	}
 
-	priv1024, _ := rsa.GenerateKey(rand.Reader, 1024)
+	priv1024, _ := cryptoutil.GenerateRSAKey(rand.Reader, 1024)
 	csr1024, _ := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv1024)
 	csrPem1024 := strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE REQUEST",
 		Bytes: csr1024,
 	})))
 
-	priv2048, _ := rsa.GenerateKey(rand.Reader, 2048)
+	priv2048, _ := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	csr2048, _ := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv2048)
 	csrPem2048 := strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE REQUEST",
@@ -698,7 +700,7 @@ func generateCSR(t *testing.T, csrTemplate *x509.CertificateRequest, keyType str
 	var err error
 	switch keyType {
 	case "rsa":
-		priv, err = rsa.GenerateKey(rand.Reader, keyBits)
+		priv, err = cryptoutil.GenerateRSAKey(rand.Reader, keyBits)
 	case "ec":
 		switch keyBits {
 		case 224:
@@ -1179,7 +1181,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 		case "rsa":
 			privKey, ok = generatedRSAKeys[keyBits]
 			if !ok {
-				privKey, _ = rsa.GenerateKey(rand.Reader, keyBits)
+				privKey, _ = cryptoutil.GenerateRSAKey(rand.Reader, keyBits)
 				generatedRSAKeys[keyBits] = privKey
 			}
 
@@ -2103,7 +2105,7 @@ func TestBackend_PathFetchCertList(t *testing.T) {
 	// list certs/
 	resp, err = b.HandleRequest(context.Background(), &logical.Request{
 		Operation:  logical.ListOperation,
-		Path:       "certs/",
+		Path:       issuing.PathCerts,
 		Storage:    storage,
 		MountPoint: "pki/",
 	})
@@ -2163,7 +2165,7 @@ func runTestSignVerbatim(t *testing.T, keyType string) {
 	}
 
 	// create a CSR and key
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2539,6 +2541,59 @@ func TestBackend_Root_Idempotency(t *testing.T) {
 	}
 }
 
+// TestBackend_SignIntermediate_EnforceLeafFlag verifies if the flag is true
+// that we will leverage the issuer's configured behavior
+func TestBackend_SignIntermediate_EnforceLeafFlag(t *testing.T) {
+	t.Parallel()
+	b, s := CreateBackendWithStorage(t)
+
+	resp, err := CBWrite(b, s, "root/generate/internal", map[string]interface{}{
+		"ttl":         "40h",
+		"common_name": "myvault.com",
+	})
+	require.NoError(t, err, "failed generating root cert")
+	rootCert := parseCert(t, resp.Data["certificate"].(string))
+
+	_, err = CBWrite(b, s, "issuer/default", map[string]interface{}{
+		"leaf_not_after_behavior": "err",
+	})
+	require.NoError(t, err, "failed updating root issuer cert behavior")
+
+	resp, err = CBWrite(b, s, "intermediate/generate/internal", map[string]interface{}{
+		"common_name": "myint.com",
+	})
+	require.NoError(t, err, "failed generating intermediary CSR")
+	csr := resp.Data["csr"]
+
+	_, err = CBWrite(b, s, "root/sign-intermediate", map[string]interface{}{
+		"common_name":                     "myint.com",
+		"other_sans":                      "1.3.6.1.4.1.311.20.2.3;utf8:caadmin@example.com",
+		"csr":                             csr,
+		"ttl":                             "60h",
+		"enforce_leaf_not_after_behavior": true,
+	})
+	require.Error(t, err, "sign-intermediate should have failed as root issuer leaf behavior is set to err")
+
+	// Now test with permit, the old default behavior
+	_, err = CBWrite(b, s, "issuer/default", map[string]interface{}{
+		"leaf_not_after_behavior": "permit",
+	})
+	require.NoError(t, err, "failed updating root issuer cert behavior to permit")
+
+	resp, err = CBWrite(b, s, "root/sign-intermediate", map[string]interface{}{
+		"common_name":                     "myint.com",
+		"other_sans":                      "1.3.6.1.4.1.311.20.2.3;utf8:caadmin@example.com",
+		"csr":                             csr,
+		"ttl":                             "60h",
+		"enforce_leaf_not_after_behavior": true,
+	})
+	require.NoError(t, err, "failed to sign intermediary CA with permit as issuer")
+	intCert := parseCert(t, resp.Data["certificate"].(string))
+
+	require.Truef(t, rootCert.NotAfter.Before(intCert.NotAfter),
+		"root cert notAfter %v was not before ca cert's notAfter %v", rootCert.NotAfter, intCert.NotAfter)
+}
+
 func TestBackend_SignIntermediate_AllowedPastCAValidity(t *testing.T) {
 	t.Parallel()
 	b_root, s_root := CreateBackendWithStorage(t)
@@ -2546,13 +2601,15 @@ func TestBackend_SignIntermediate_AllowedPastCAValidity(t *testing.T) {
 	var err error
 
 	// Direct issuing from root
-	_, err = CBWrite(b_root, s_root, "root/generate/internal", map[string]interface{}{
+	resp, err := CBWrite(b_root, s_root, "root/generate/internal", map[string]interface{}{
 		"ttl":         "40h",
 		"common_name": "myvault.com",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	rootCert := parseCert(t, resp.Data["certificate"].(string))
 
 	_, err = CBWrite(b_root, s_root, "roles/test", map[string]interface{}{
 		"allow_bare_domains": true,
@@ -2563,7 +2620,7 @@ func TestBackend_SignIntermediate_AllowedPastCAValidity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := CBWrite(b_int, s_int, "intermediate/generate/internal", map[string]interface{}{
+	resp, err = CBWrite(b_int, s_int, "intermediate/generate/internal", map[string]interface{}{
 		"common_name": "myint.com",
 	})
 	schema.ValidateResponse(t, schema.GetResponseSchema(t, b_root.Route("intermediate/generate/internal"), logical.UpdateOperation), resp, true)
@@ -2614,6 +2671,9 @@ func TestBackend_SignIntermediate_AllowedPastCAValidity(t *testing.T) {
 	cert := parseCert(t, resp.Data["certificate"].(string))
 	certSkid := certutil.GetHexFormatted(cert.SubjectKeyId, ":")
 	require.Equal(t, intSkid, certSkid)
+
+	require.Equal(t, rootCert.NotAfter, cert.NotAfter, "intermediary cert's NotAfter did not match root cert's NotAfter")
+	require.Contains(t, resp.Warnings, intCaTruncatationWarning, "missing warning about intermediary CA notAfter truncation")
 }
 
 func TestBackend_ConsulSignLeafWithLegacyRole(t *testing.T) {
@@ -2676,7 +2736,7 @@ func TestBackend_SignSelfIssued(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2820,7 +2880,7 @@ func TestBackend_SignSelfIssued_DifferentTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3709,6 +3769,10 @@ func TestReadWriteDeleteRoles(t *testing.T) {
 		"allowed_user_ids":                   []interface{}{},
 	}
 
+	if issuing.MetadataPermitted {
+		expectedData["no_store_metadata"] = false
+	}
+
 	if diff := deep.Equal(expectedData, resp.Data); len(diff) > 0 {
 		t.Fatalf("pki role default values have changed, diff: %v", diff)
 	}
@@ -3771,7 +3835,7 @@ func setCerts() {
 	}
 	ecCACert = strings.TrimSpace(string(pem.EncodeToMemory(caCertPEMBlock)))
 
-	rak, err := rsa.GenerateKey(rand.Reader, 2048)
+	rak, err := cryptoutil.GenerateRSAKey(rand.Reader, 2048)
 	if err != nil {
 		panic(err)
 	}
@@ -4050,6 +4114,8 @@ func TestBackend_RevokePlusTidy_Intermediate(t *testing.T) {
 			"tidy_move_legacy_ca_bundle":            false,
 			"tidy_revocation_queue":                 false,
 			"tidy_cross_cluster_revoked_certs":      false,
+			"tidy_cert_metadata":                    false,
+			"tidy_cmpv2_nonce_store":                false,
 			"pause_duration":                        "0s",
 			"state":                                 "Finished",
 			"error":                                 nil,
@@ -4071,6 +4137,8 @@ func TestBackend_RevokePlusTidy_Intermediate(t *testing.T) {
 			"acme_account_revoked_count":            json.Number("0"),
 			"acme_account_deleted_count":            json.Number("0"),
 			"total_acme_account_count":              json.Number("0"),
+			"cert_metadata_deleted_count":           json.Number("0"),
+			"cmpv2_nonce_deleted_count":             json.Number("0"),
 		}
 		// Let's copy the times from the response so that we can use deep.Equal()
 		timeStarted, ok := tidyStatus.Data["time_started"]
@@ -6020,7 +6088,7 @@ func TestPKI_EmptyCRLConfigUpgraded(t *testing.T) {
 	b, s := CreateBackendWithStorage(t)
 
 	// Write an empty CRLConfig into storage.
-	crlConfigEntry, err := logical.StorageEntryJSON("config/crl", &crlConfig{})
+	crlConfigEntry, err := logical.StorageEntryJSON("config/crl", &pki_backend.CrlConfig{})
 	require.NoError(t, err)
 	err = s.Put(ctx, crlConfigEntry)
 	require.NoError(t, err)
@@ -6029,13 +6097,14 @@ func TestPKI_EmptyCRLConfigUpgraded(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.NotNil(t, resp.Data)
-	require.Equal(t, resp.Data["expiry"], defaultCrlConfig.Expiry)
-	require.Equal(t, resp.Data["disable"], defaultCrlConfig.Disable)
-	require.Equal(t, resp.Data["ocsp_disable"], defaultCrlConfig.OcspDisable)
-	require.Equal(t, resp.Data["auto_rebuild"], defaultCrlConfig.AutoRebuild)
-	require.Equal(t, resp.Data["auto_rebuild_grace_period"], defaultCrlConfig.AutoRebuildGracePeriod)
-	require.Equal(t, resp.Data["enable_delta"], defaultCrlConfig.EnableDelta)
-	require.Equal(t, resp.Data["delta_rebuild_interval"], defaultCrlConfig.DeltaRebuildInterval)
+	require.Equal(t, resp.Data["expiry"], pki_backend.DefaultCrlConfig.Expiry)
+	require.Equal(t, resp.Data["disable"], pki_backend.DefaultCrlConfig.Disable)
+	require.Equal(t, resp.Data["ocsp_disable"], pki_backend.DefaultCrlConfig.OcspDisable)
+	require.Equal(t, resp.Data["auto_rebuild"], pki_backend.DefaultCrlConfig.AutoRebuild)
+	require.Equal(t, resp.Data["auto_rebuild_grace_period"], pki_backend.DefaultCrlConfig.AutoRebuildGracePeriod)
+	require.Equal(t, resp.Data["enable_delta"], pki_backend.DefaultCrlConfig.EnableDelta)
+	require.Equal(t, resp.Data["delta_rebuild_interval"], pki_backend.DefaultCrlConfig.DeltaRebuildInterval)
+	require.Equal(t, resp.Data["max_crl_entries"], pki_backend.DefaultCrlConfig.MaxCRLEntries)
 }
 
 func TestPKI_ListRevokedCerts(t *testing.T) {
@@ -6700,12 +6769,14 @@ const (
 	shouldBeAuthed pathAuthChecker = iota
 	shouldBeUnauthedReadList
 	shouldBeUnauthedWriteOnly
+	shouldBeUnauthedReadWriteOnly
 )
 
 var pathAuthChckerMap = map[pathAuthChecker]pathAuthCheckerFunc{
-	shouldBeAuthed:            pathShouldBeAuthed,
-	shouldBeUnauthedReadList:  pathShouldBeUnauthedReadList,
-	shouldBeUnauthedWriteOnly: pathShouldBeUnauthedWriteOnly,
+	shouldBeAuthed:                pathShouldBeAuthed,
+	shouldBeUnauthedReadList:      pathShouldBeUnauthedReadList,
+	shouldBeUnauthedWriteOnly:     pathShouldBeUnauthedWriteOnly,
+	shouldBeUnauthedReadWriteOnly: pathShouldBeUnauthedWriteOnly,
 }
 
 func TestProperAuthing(t *testing.T) {
@@ -6760,6 +6831,7 @@ func TestProperAuthing(t *testing.T) {
 	}
 	serial := resp.Data["serial_number"].(string)
 	eabKid := "13b80844-e60d-42d2-b7e9-152a8e834b90"
+	acmeKeyId := "hrKmDYTvicHoHGVN2-3uzZV_BPGdE0W_dNaqYTtYqeo="
 	paths := map[string]pathAuthChecker{
 		"ca_chain":                               shouldBeUnauthedReadList,
 		"cert/ca_chain":                          shouldBeUnauthedReadList,
@@ -6780,7 +6852,7 @@ func TestProperAuthing(t *testing.T) {
 		"cert/unified-delta-crl":                 shouldBeUnauthedReadList,
 		"cert/unified-delta-crl/raw":             shouldBeUnauthedReadList,
 		"cert/unified-delta-crl/raw/pem":         shouldBeUnauthedReadList,
-		"certs/":                                 shouldBeAuthed,
+		issuing.PathCerts:                        shouldBeAuthed,
 		"certs/revoked/":                         shouldBeAuthed,
 		"certs/revocation-queue/":                shouldBeAuthed,
 		"certs/unified-revoked/":                 shouldBeAuthed,
@@ -6879,6 +6951,8 @@ func TestProperAuthing(t *testing.T) {
 		"unified-ocsp/dGVzdAo=":                  shouldBeUnauthedReadList,
 		"eab/":                                   shouldBeAuthed,
 		"eab/" + eabKid:                          shouldBeAuthed,
+		"acme/mgmt/account/keyid/":               shouldBeAuthed,
+		"acme/mgmt/account/keyid/" + acmeKeyId:   shouldBeAuthed,
 	}
 
 	entPaths := getEntProperAuthingPaths(serial)
@@ -6949,7 +7023,10 @@ func TestProperAuthing(t *testing.T) {
 			raw_path = strings.ReplaceAll(raw_path, "{serial}", serial)
 		}
 		if strings.Contains(raw_path, "acme/account/") && strings.Contains(raw_path, "{kid}") {
-			raw_path = strings.ReplaceAll(raw_path, "{kid}", "hrKmDYTvicHoHGVN2-3uzZV_BPGdE0W_dNaqYTtYqeo=")
+			raw_path = strings.ReplaceAll(raw_path, "{kid}", acmeKeyId)
+		}
+		if strings.Contains(raw_path, "acme/mgmt/account/") && strings.Contains(raw_path, "{keyid}") {
+			raw_path = strings.ReplaceAll(raw_path, "{keyid}", acmeKeyId)
 		}
 		if strings.Contains(raw_path, "acme/") && strings.Contains(raw_path, "{auth_id}") {
 			raw_path = strings.ReplaceAll(raw_path, "{auth_id}", "29da8c38-7a09-465e-b9a6-3d76802b1afd")
@@ -6999,6 +7076,10 @@ func TestProperAuthing(t *testing.T) {
 			if hasGet || hasList {
 				t.Fatalf("Unauthed write-only endpoints should not have GET/LIST capabilities: %v->%v", openapi_path, raw_path)
 			}
+		} else if handler == shouldBeUnauthedReadWriteOnly {
+			if hasDelete || hasList {
+				t.Fatalf("Unauthed read-write-only endpoints should not have DELETE/LIST capabilities: %v->%v", openapi_path, raw_path)
+			}
 		}
 	}
 
@@ -7007,15 +7088,16 @@ func TestProperAuthing(t *testing.T) {
 	}
 }
 
+type patchIssuerTestCase struct {
+	Field   string
+	Before  interface{}
+	Patched interface{}
+}
+
 func TestPatchIssuer(t *testing.T) {
 	t.Parallel()
 
-	type TestCase struct {
-		Field   string
-		Before  interface{}
-		Patched interface{}
-	}
-	testCases := []TestCase{
+	testCases := []patchIssuerTestCase{
 		{
 			Field:   "issuer_name",
 			Before:  "root",
@@ -7062,65 +7144,82 @@ func TestPatchIssuer(t *testing.T) {
 			Patched: []string{"self"},
 		},
 	}
+	testPatchIssuer(t, testCases)
+}
 
-	for index, testCase := range testCases {
-		t.Logf("index: %v / tc: %v", index, testCase)
+func testPatchIssuer(t *testing.T, testCases []patchIssuerTestCase) {
+	for _, testCase := range testCases {
+		t.Run(testCase.Field, func(t *testing.T) {
+			b, s := CreateBackendWithStorage(t)
 
-		b, s := CreateBackendWithStorage(t)
+			// 1. Setup root issuer.
+			resp, err := CBWrite(b, s, "root/generate/internal", map[string]interface{}{
+				"common_name": "Vault Root CA",
+				"key_type":    "ec",
+				"ttl":         "7200h",
+				"issuer_name": "root",
+			})
+			requireSuccessNonNilResponse(t, resp, err, "failed generating root issuer")
+			id := string(resp.Data["issuer_id"].(issuing.IssuerID))
 
-		// 1. Setup root issuer.
-		resp, err := CBWrite(b, s, "root/generate/internal", map[string]interface{}{
-			"common_name": "Vault Root CA",
-			"key_type":    "ec",
-			"ttl":         "7200h",
-			"issuer_name": "root",
+			// 2. Enable Cluster paths
+			resp, err = CBWrite(b, s, "config/urls", map[string]interface{}{
+				"path":     "https://localhost/v1/pki",
+				"aia_path": "http://localhost/v1/pki",
+			})
+			requireSuccessNonNilResponse(t, resp, err, "failed updating AIA config")
+
+			// 3. Add AIA information
+			resp, err = CBPatch(b, s, "issuer/default", map[string]interface{}{
+				"issuing_certificates":    "http://localhost/v1/pki-1/ca",
+				"crl_distribution_points": "http://localhost/v1/pki-1/crl",
+				"ocsp_servers":            "http://localhost/v1/pki-1/ocsp",
+			})
+			requireSuccessNonNilResponse(t, resp, err, "failed setting up issuer")
+
+			// 4. Read the issuer before.
+			resp, err = CBRead(b, s, "issuer/default")
+			requireSuccessNonNilResponse(t, resp, err, "failed reading root issuer before")
+			require.Equal(t, testCase.Before, resp.Data[testCase.Field], "bad expectations")
+
+			// 5. Perform modification.
+			resp, err = CBPatch(b, s, "issuer/default", map[string]interface{}{
+				testCase.Field: testCase.Patched,
+			})
+			requireSuccessNonNilResponse(t, resp, err, "failed patching root issuer")
+
+			if testCase.Field != "manual_chain" {
+				require.Equal(t, testCase.Patched, resp.Data[testCase.Field], "failed persisting value")
+			} else {
+				// self->id
+				require.Equal(t, []string{id}, resp.Data[testCase.Field], "failed persisting value")
+			}
+
+			// 6. Ensure it stuck
+			resp, err = CBRead(b, s, "issuer/default")
+			requireSuccessNonNilResponse(t, resp, err, "failed reading root issuer after")
+
+			if testCase.Field != "manual_chain" {
+				require.Equal(t, testCase.Patched, resp.Data[testCase.Field])
+			} else {
+				// self->id
+				require.Equal(t, []string{id}, resp.Data[testCase.Field], "failed persisting value")
+			}
+
+			// 7. Patch it back
+			resp, err = CBPatch(b, s, "issuer/default", map[string]interface{}{
+				testCase.Field: testCase.Before,
+			})
+			requireSuccessNonNilResponse(t, resp, err, "failed patching root issuer")
+
+			require.Equal(t, testCase.Before, resp.Data[testCase.Field], "failed persisting value")
+
+			// 8. Ensure it stuck
+			resp, err = CBRead(b, s, "issuer/default")
+			requireSuccessNonNilResponse(t, resp, err, "failed reading root issuer after")
+
+			require.Equal(t, testCase.Before, resp.Data[testCase.Field])
 		})
-		requireSuccessNonNilResponse(t, resp, err, "failed generating root issuer")
-		id := string(resp.Data["issuer_id"].(issuing.IssuerID))
-
-		// 2. Enable Cluster paths
-		resp, err = CBWrite(b, s, "config/urls", map[string]interface{}{
-			"path":     "https://localhost/v1/pki",
-			"aia_path": "http://localhost/v1/pki",
-		})
-		requireSuccessNonNilResponse(t, resp, err, "failed updating AIA config")
-
-		// 3. Add AIA information
-		resp, err = CBPatch(b, s, "issuer/default", map[string]interface{}{
-			"issuing_certificates":    "http://localhost/v1/pki-1/ca",
-			"crl_distribution_points": "http://localhost/v1/pki-1/crl",
-			"ocsp_servers":            "http://localhost/v1/pki-1/ocsp",
-		})
-		requireSuccessNonNilResponse(t, resp, err, "failed setting up issuer")
-
-		// 4. Read the issuer before.
-		resp, err = CBRead(b, s, "issuer/default")
-		requireSuccessNonNilResponse(t, resp, err, "failed reading root issuer before")
-		require.Equal(t, testCase.Before, resp.Data[testCase.Field], "bad expectations")
-
-		// 5. Perform modification.
-		resp, err = CBPatch(b, s, "issuer/default", map[string]interface{}{
-			testCase.Field: testCase.Patched,
-		})
-		requireSuccessNonNilResponse(t, resp, err, "failed patching root issuer")
-
-		if testCase.Field != "manual_chain" {
-			require.Equal(t, testCase.Patched, resp.Data[testCase.Field], "failed persisting value")
-		} else {
-			// self->id
-			require.Equal(t, []string{id}, resp.Data[testCase.Field], "failed persisting value")
-		}
-
-		// 6. Ensure it stuck
-		resp, err = CBRead(b, s, "issuer/default")
-		requireSuccessNonNilResponse(t, resp, err, "failed reading root issuer after")
-
-		if testCase.Field != "manual_chain" {
-			require.Equal(t, testCase.Patched, resp.Data[testCase.Field])
-		} else {
-			// self->id
-			require.Equal(t, []string{id}, resp.Data[testCase.Field], "failed persisting value")
-		}
 	}
 }
 
@@ -7149,6 +7248,94 @@ func TestGenerateRootCAWithAIA(t *testing.T) {
 		"key_type":    "ec",
 	})
 	requireSuccessNonNilResponse(t, resp, err, "expected root generation to succeed")
+}
+
+// TestIssuance_AlwaysEnforceErr validates that we properly return an error in all request
+// types that go beyond the issuer's NotAfter
+func TestIssuance_AlwaysEnforceErr(t *testing.T) {
+	t.Parallel()
+	b, s := CreateBackendWithStorage(t)
+
+	resp, err := CBWrite(b, s, "root/generate/internal", map[string]interface{}{
+		"common_name": "root myvault.com",
+		"key_type":    "ec",
+		"ttl":         "10h",
+		"issuer_name": "root-ca",
+		"key_name":    "root-key",
+	})
+	requireSuccessNonNilResponse(t, resp, err, "expected root generation to succeed")
+
+	resp, err = CBPatch(b, s, "issuer/root-ca", map[string]interface{}{
+		"leaf_not_after_behavior": "always_enforce_err",
+	})
+	requireSuccessNonNilResponse(t, resp, err, "failed updating root issuer with always_enforce_err")
+
+	resp, err = CBWrite(b, s, "roles/test-role", map[string]interface{}{
+		"allow_any_name":         true,
+		"key_type":               "ec",
+		"allowed_serial_numbers": "*",
+	})
+
+	expectedErrContains := "cannot satisfy request, as TTL would result in notAfter"
+
+	// Make sure we fail on CA issuance requests now
+	t.Run("ca-issuance", func(t *testing.T) {
+		resp, err = CBWrite(b, s, "intermediate/generate/internal", map[string]interface{}{
+			"common_name": "myint.com",
+		})
+		requireSuccessNonNilResponse(t, resp, err, "failed generating intermediary CSR")
+		requireFieldsSetInResp(t, resp, "csr")
+		csr := resp.Data["csr"]
+
+		_, err = CBWrite(b, s, "issuer/root-ca/sign-intermediate", map[string]interface{}{
+			"csr":            csr,
+			"use_csr_values": true,
+			"ttl":            "60h",
+		})
+		require.ErrorContains(t, err, expectedErrContains, "sign-intermediate should have failed as root issuer leaf behavior is set to always_enforce_err")
+
+		// Make sure it works if we are under
+		resp, err = CBWrite(b, s, "issuer/root-ca/sign-intermediate", map[string]interface{}{
+			"csr":            csr,
+			"use_csr_values": true,
+			"ttl":            "30m",
+		})
+		requireSuccessNonNilResponse(t, resp, err, "sign-intermediate should have passed with a lower TTL value and always_enforce_err")
+	})
+
+	// Make sure we fail on leaf csr signing leaf as we always did for 'err'
+	t.Run("sign-leaf-csr", func(t *testing.T) {
+		_, csrPem := generateTestCsr(t, certutil.ECPrivateKey, 256)
+
+		resp, err = CBWrite(b, s, "issuer/root-ca/sign/test-role", map[string]interface{}{
+			"ttl": "60h",
+			"csr": csrPem,
+		})
+		require.ErrorContains(t, err, expectedErrContains, "expected error from sign csr got: %v", resp)
+
+		// Make sure it works if we are under
+		resp, err = CBWrite(b, s, "issuer/root-ca/sign/test-role", map[string]interface{}{
+			"ttl": "30m",
+			"csr": csrPem,
+		})
+		requireSuccessNonNilResponse(t, resp, err, "sign should have succeeded with a lower TTL and always_enforce_err")
+	})
+
+	// Make sure we fail on leaf csr signing leaf as we always did for 'err'
+	t.Run("issue-leaf-csr", func(t *testing.T) {
+		resp, err = CBWrite(b, s, "issuer/root-ca/issue/test-role", map[string]interface{}{
+			"ttl":         "60h",
+			"common_name": "leaf.example.com",
+		})
+		require.ErrorContains(t, err, expectedErrContains, "expected error from issue got: %v", resp)
+
+		// Make sure it works if we are under
+		resp, err = CBWrite(b, s, "issuer/root-ca/issue/test-role", map[string]interface{}{
+			"ttl":         "30m",
+			"common_name": "leaf.example.com",
+		})
+		requireSuccessNonNilResponse(t, resp, err, "issue should have worked with a lower TTL and always_enforce_err")
+	})
 }
 
 var (

@@ -52,9 +52,9 @@ module('Integration | Component | kv-v2 | Page::Configuration', function (hooks)
     };
 
     this.breadcrumbs = [
-      { label: 'secrets', route: 'secrets', linkExternal: true },
+      { label: 'Secrets', route: 'secrets', linkExternal: true },
       { label: this.model.mountConfig.path, route: 'list' },
-      { label: 'configuration' },
+      { label: 'Configuration' },
     ];
   });
 

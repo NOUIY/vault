@@ -9,7 +9,7 @@ import Base from '../../replication-base';
 
 export default Base.extend({
   flashMessages: service(),
-  router: service(),
+  router: service('app-router'),
 
   modelPath: 'model.config',
 
@@ -19,7 +19,8 @@ export default Base.extend({
       .findRecord('path-filter-config', id)
       .then(() => {
         // if we find a record, transition to the edit view
-        return this.transitionTo('mode.secondaries.config-edit', id)
+        return this.router
+          .transitionTo('vault.cluster.replication.mode.secondaries.config-edit', id)
           .followRedirects()
           .then(() => {
             flash.info(
@@ -46,8 +47,8 @@ export default Base.extend({
     if (
       !this.version.hasPerfReplication ||
       replicationMode !== 'performance' ||
-      !cluster.get(`${replicationMode}.isPrimary`) ||
-      !cluster.get('canAddSecondary')
+      !cluster[replicationMode].isPrimary ||
+      !cluster.canAddSecondary
     ) {
       return this.router.transitionTo('vault.cluster.replication.mode', replicationMode);
     }

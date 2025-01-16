@@ -4,24 +4,23 @@
  */
 
 import { settled, currentRouteName, click, waitUntil, find } from '@ember/test-helpers';
-import { selectChoose, clickTrigger } from 'ember-power-select/test-support/helpers';
+import { selectChoose } from 'ember-power-select/test-support';
+import { clickTrigger } from 'ember-power-select/test-support/helpers';
 import page from 'vault/tests/pages/access/identity/create';
 import showPage from 'vault/tests/pages/access/identity/show';
 import indexPage from 'vault/tests/pages/access/identity/index';
+import { GENERAL } from 'vault/tests/helpers/general-selectors';
 const SELECTORS = {
   identityRow: (name) => `[data-test-identity-row="${name}"]`,
   popupMenu: '[data-test-popup-menu-trigger]',
-  menuDelete: '[data-test-popup-menu="delete"]',
+  menuDelete: (name) => `[data-test-identity-row="${name}"] [data-test-popup-menu="delete"]`,
 };
 export const testCRUD = async (name, itemType, assert) => {
   await page.visit({ item_type: itemType });
   await settled();
   await page.editForm.name(name).submit();
   await settled();
-  assert.ok(
-    showPage.flashMessage.latestMessage.startsWith('Successfully saved'),
-    `${itemType}: shows a flash message`
-  );
+  assert.dom(GENERAL.latestFlashContent).includesText('Successfully saved');
   assert.strictEqual(
     currentRouteName(),
     'vault.cluster.access.identity.show',
@@ -37,14 +36,11 @@ export const testCRUD = async (name, itemType, assert) => {
   );
 
   await click(`${SELECTORS.identityRow(name)} ${SELECTORS.popupMenu}`);
-  await waitUntil(() => find(SELECTORS.menuDelete));
-  await click(SELECTORS.menuDelete);
+  await waitUntil(() => find(SELECTORS.menuDelete(name)));
+  await click(SELECTORS.menuDelete(name));
   await indexPage.confirmDelete();
   await settled();
-  assert.ok(
-    indexPage.flashMessage.latestMessage.startsWith('Successfully deleted'),
-    `${itemType}: shows flash message`
-  );
+  assert.dom(GENERAL.latestFlashContent).includesText('Successfully deleted');
   assert.strictEqual(indexPage.items.filterBy('name', name).length, 0, `${itemType}: the row is deleted`);
 };
 
@@ -61,7 +57,7 @@ export const testDeleteFromForm = async (name, itemType, assert) => {
   await click('[data-test-tab-subnav="policies"]');
   assert.dom('.list-item-row').exists({ count: 1 }, 'One item is under policies');
   await click('[data-test-tab-subnav="metadata"]');
-  assert.dom('.info-table-row').hasText('hello goodbye', 'Metadata shows on tab');
+  assert.dom('.info-table-row').hasTextContaining('hello goodbye', 'Metadata shows on tab');
   await showPage.edit();
   assert.strictEqual(
     currentRouteName(),
@@ -73,10 +69,7 @@ export const testDeleteFromForm = async (name, itemType, assert) => {
   await settled();
   await page.editForm.confirmDelete();
   await settled();
-  assert.ok(
-    indexPage.flashMessage.latestMessage.startsWith('Successfully deleted'),
-    `${itemType}: shows flash message`
-  );
+  assert.dom(GENERAL.latestFlashContent).includesText('Successfully deleted');
   assert.strictEqual(
     currentRouteName(),
     'vault.cluster.access.identity.index',

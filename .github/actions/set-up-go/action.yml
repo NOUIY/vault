@@ -8,14 +8,11 @@ description: Set up Go with a shared module cache.
 inputs:
   github-token:
     description: An elevated Github token to access private modules if necessary.
-    type: string
   no-restore:
     description: Whether or not to restore the Go module cache on a cache hit
-    type: boolean
-    default: false
+    default: "false"
   go-version:
     description: "Override .go-version"
-    type: string
     default: ""
 
 outputs:
@@ -40,7 +37,7 @@ runs:
         else
           echo "go-version=${{ inputs.go-version }}" | tee -a "$GITHUB_OUTPUT"
         fi
-    - uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
       with:
         go-version: ${{ steps.go-version.outputs.go-version }}
         cache: false # We use our own caching strategy
@@ -52,7 +49,7 @@ runs:
           echo "cache-key=go-modules-${{ hashFiles('**/go.sum') }}"
         } | tee -a "$GITHUB_OUTPUT"
     - id: cache-modules
-      uses: actions/cache@13aacd865c20de90d75de3b17ebe84f7a17d57d2 # v4.0.0
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
       with:
         enableCrossOsArchive: true
         lookup-only: ${{ inputs.no-restore }}

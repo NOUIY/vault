@@ -40,7 +40,21 @@ type DatabaseConfig struct {
 
 	RootCredentialsRotateStatements []string `json:"root_credentials_rotate_statements" structs:"root_credentials_rotate_statements" mapstructure:"root_credentials_rotate_statements"`
 
-	PasswordPolicy string `json:"password_policy" structs:"password_policy" mapstructure:"password_policy"`
+	PasswordPolicy   string `json:"password_policy" structs:"password_policy" mapstructure:"password_policy"`
+	VerifyConnection bool   `json:"verify_connection" structs:"verify_connection" mapstructure:"verify_connection"`
+
+	// SkipStaticRoleImportRotation is a flag to toggle wether or not a given
+	// static account's password should be rotated on creation of the static
+	// roles associated with this DB config. This can be overridden at the
+	// role-level by the role's skip_import_rotation field. The default is
+	// false. Enterprise only.
+	SkipStaticRoleImportRotation bool `json:"skip_static_role_import_rotation" structs:"skip_static_role_import_rotation" mapstructure:"skip_static_role_import_rotation"`
+}
+
+// ConnectionDetails represents the DatabaseConfig.ConnectionDetails map as a
+// struct
+type ConnectionDetails struct {
+	SelfManaged bool `json:"self_managed" structs:"self_managed" mapstructure:"self_managed"`
 }
 
 func (c *DatabaseConfig) SupportsCredentialType(credentialType v5.CredentialType) bool {
@@ -204,6 +218,52 @@ func (b *databaseBackend) reloadPlugin() framework.OperationFunc {
 // pathConfigurePluginConnection returns a configured framework.Path setup to
 // operate on plugins.
 func pathConfigurePluginConnection(b *databaseBackend) *framework.Path {
+	fields := map[string]*framework.FieldSchema{
+		"name": {
+			Type:        framework.TypeString,
+			Description: "Name of this database connection",
+		},
+
+		"plugin_name": {
+			Type: framework.TypeString,
+			Description: `The name of a builtin or previously registered
+				plugin known to vault. This endpoint will create an instance of
+				that plugin type.`,
+		},
+
+		"plugin_version": {
+			Type:        framework.TypeString,
+			Description: `The version of the plugin to use.`,
+		},
+
+		"verify_connection": {
+			Type:    framework.TypeBool,
+			Default: true,
+			Description: `If true, the connection details are verified by
+				actually connecting to the database. Defaults to true.`,
+		},
+
+		"allowed_roles": {
+			Type: framework.TypeCommaStringSlice,
+			Description: `Comma separated string or array of the role names
+				allowed to get creds from this database connection. If empty no
+				roles are allowed. If "*" all roles are allowed.`,
+		},
+
+		"root_rotation_statements": {
+			Type: framework.TypeStringSlice,
+			Description: `Specifies the database statements to be executed
+				to rotate the root user's credentials. See the plugin's API 
+				page for more information on support and formatting for this 
+				parameter.`,
+		},
+		"password_policy": {
+			Type:        framework.TypeString,
+			Description: `Password policy to use when generating passwords.`,
+		},
+	}
+	AddConnectionFieldsEnt(fields)
+
 	return &framework.Path{
 		Pattern: fmt.Sprintf("config/%s", framework.GenericNameRegex("name")),
 
@@ -211,50 +271,7 @@ func pathConfigurePluginConnection(b *databaseBackend) *framework.Path {
 			OperationPrefix: operationPrefixDatabase,
 		},
 
-		Fields: map[string]*framework.FieldSchema{
-			"name": {
-				Type:        framework.TypeString,
-				Description: "Name of this database connection",
-			},
-
-			"plugin_name": {
-				Type: framework.TypeString,
-				Description: `The name of a builtin or previously registered
-				plugin known to vault. This endpoint will create an instance of
-				that plugin type.`,
-			},
-
-			"plugin_version": {
-				Type:        framework.TypeString,
-				Description: `The version of the plugin to use.`,
-			},
-
-			"verify_connection": {
-				Type:    framework.TypeBool,
-				Default: true,
-				Description: `If true, the connection details are verified by
-				actually connecting to the database. Defaults to true.`,
-			},
-
-			"allowed_roles": {
-				Type: framework.TypeCommaStringSlice,
-				Description: `Comma separated string or array of the role names
-				allowed to get creds from this database connection. If empty no
-				roles are allowed. If "*" all roles are allowed.`,
-			},
-
-			"root_rotation_statements": {
-				Type: framework.TypeStringSlice,
-				Description: `Specifies the database statements to be executed
-				to rotate the root user's credentials. See the plugin's API 
-				page for more information on support and formatting for this 
-				parameter.`,
-			},
-			"password_policy": {
-				Type:        framework.TypeString,
-				Description: `Password policy to use when generating passwords.`,
-			},
-		},
+		Fields: fields,
 
 		ExistenceCheck: b.connectionExistenceCheck(),
 
@@ -378,7 +395,7 @@ func (b *databaseBackend) connectionReadHandler() framework.OperationFunc {
 		delete(config.ConnectionDetails, "service_account_json")
 
 		resp := &logical.Response{}
-		if dbi, err := b.GetConnection(ctx, req.Storage, name); err == nil {
+		if dbi, err := b.GetConnectionSkipVerify(ctx, req.Storage, name); err == nil {
 			config.RunningPluginVersion = dbi.runningPluginVersion
 			if config.PluginVersion != "" && config.PluginVersion != config.RunningPluginVersion {
 				warning := fmt.Sprintf("Plugin version is configured as %q, but running %q", config.PluginVersion, config.RunningPluginVersion)
@@ -422,15 +439,15 @@ func (b *databaseBackend) connectionDeleteHandler() framework.OperationFunc {
 // both builtin and plugin database types.
 func (b *databaseBackend) connectionWriteHandler() framework.OperationFunc {
 	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-		verifyConnection := data.Get("verify_connection").(bool)
-
 		name := data.Get("name").(string)
 		if name == "" {
 			return logical.ErrorResponse(respErrEmptyName), nil
 		}
 
 		// Baseline
-		config := &DatabaseConfig{}
+		config := &DatabaseConfig{
+			VerifyConnection: true,
+		}
 
 		entry, err := req.Storage.Get(ctx, fmt.Sprintf("config/%s", name))
 		if err != nil {
@@ -440,6 +457,13 @@ func (b *databaseBackend) connectionWriteHandler() framework.OperationFunc {
 			if err := entry.DecodeJSON(config); err != nil {
 				return nil, err
 			}
+		}
+
+		// If this value was provided as part of the request we want to set it to this value
+		if verifyConnectionRaw, ok := data.GetOk("verify_connection"); ok {
+			config.VerifyConnection = verifyConnectionRaw.(bool)
+		} else if req.Operation == logical.CreateOperation {
+			config.VerifyConnection = data.Get("verify_connection").(bool)
 		}
 
 		if pluginNameRaw, ok := data.GetOk("plugin_name"); ok {
@@ -472,6 +496,10 @@ func (b *databaseBackend) connectionWriteHandler() framework.OperationFunc {
 			config.PasswordPolicy = passwordPolicyRaw.(string)
 		}
 
+		if skipImportRotationRaw, ok := data.GetOk("skip_static_role_import_rotation"); ok {
+			config.SkipStaticRoleImportRotation = skipImportRotationRaw.(bool)
+		}
+
 		// Remove these entries from the data before we store it keyed under
 		// ConnectionDetails.
 		delete(data.Raw, "name")
@@ -481,6 +509,7 @@ func (b *databaseBackend) connectionWriteHandler() framework.OperationFunc {
 		delete(data.Raw, "verify_connection")
 		delete(data.Raw, "root_rotation_statements")
 		delete(data.Raw, "password_policy")
+		delete(data.Raw, "skip_static_role_import_rotation")
 
 		id, err := uuid.GenerateUUID()
 		if err != nil {
@@ -509,7 +538,7 @@ func (b *databaseBackend) connectionWriteHandler() framework.OperationFunc {
 
 		initReq := v5.InitializeRequest{
 			Config:           config.ConnectionDetails,
-			VerifyConnection: verifyConnection,
+			VerifyConnection: config.VerifyConnection,
 		}
 		initResp, err := dbw.Initialize(ctx, initReq)
 		if err != nil {

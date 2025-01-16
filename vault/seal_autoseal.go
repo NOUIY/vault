@@ -118,6 +118,18 @@ func (d *autoSeal) SetStoredKeys(ctx context.Context, keys [][]byte) error {
 	return writeStoredKeys(ctx, d.core.physical, d.Access, keys)
 }
 
+func (d *autoSeal) SetInitializationFlag(ctx context.Context) error {
+	return writeInitializationFlag(ctx, d.core.physical, true)
+}
+
+func (d *autoSeal) ClearInitializationFlag(ctx context.Context) error {
+	return writeInitializationFlag(ctx, d.core.physical, false)
+}
+
+func (d *autoSeal) IsInitializationFlagSet(ctx context.Context) (bool, error) {
+	return isInitializationFlagSet(ctx, d.core.physical)
+}
+
 // GetStoredKeys retrieves the key shares by unwrapping the encrypted key using the
 // autoseal.
 func (d *autoSeal) GetStoredKeys(ctx context.Context) ([][]byte, error) {
@@ -194,13 +206,17 @@ func (d *autoSeal) BarrierConfig(ctx context.Context) (*SealConfig, error) {
 
 	barrierTypeUpgradeCheck(d.BarrierSealConfigType(), conf)
 
-	if conf.Type != d.BarrierSealConfigType().String() && conf.Type != SealConfigTypeMultiseal.String() && d.BarrierSealConfigType() != SealConfigTypeMultiseal {
+	if !CompatibleSealTypes(conf.Type, d.BarrierSealConfigType().String()) {
 		d.logger.Error("barrier seal type does not match loaded type", "seal_type", conf.Type, "loaded_type", d.BarrierSealConfigType())
 		return nil, fmt.Errorf("barrier seal type of %q does not match loaded type of %q", conf.Type, d.BarrierSealConfigType())
 	}
 
 	d.SetCachedBarrierConfig(conf)
 	return conf.Clone(), nil
+}
+
+func CompatibleSealTypes(a, b string) bool {
+	return a == b || a == SealConfigTypeMultiseal.String() || b == SealConfigTypeMultiseal.String()
 }
 
 func (d *autoSeal) ClearBarrierConfig(ctx context.Context) error {
@@ -513,7 +529,7 @@ error and restart Vault.`)
 				d.core.MetricSink().SetGauge(autoSealUnavailableDuration, 0)
 			} else {
 				if lastTestOk && allUnhealthy {
-					d.logger.Info("seal backend is completely unhealthy (all seal wrappers all unhealthy)", "downtime", now.Sub(lastSeenOk).String())
+					d.logger.Error("seal backend is completely unhealthy (all seal wrappers all unhealthy)", "downtime", now.Sub(lastSeenOk).String())
 				}
 				lastTestOk = false
 				healthCheck.Reset(seal.HealthTestIntervalUnhealthy)

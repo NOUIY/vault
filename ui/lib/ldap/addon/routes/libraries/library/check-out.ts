@@ -16,6 +16,7 @@ import type Transition from '@ember/routing/transition';
 import type { Breadcrumb } from 'vault/vault/app-types';
 import { LdapLibraryCheckOutCredentials } from 'vault/vault/adapters/ldap/library';
 import type AdapterError from 'ember-data/adapter'; // eslint-disable-line ember/use-ember-data-rfc-395-imports
+import { ldapBreadcrumbs, libraryRoutes } from 'ldap/utils/ldap-breadcrumbs';
 
 interface LdapLibraryCheckOutController extends Controller {
   breadcrumbs: Array<Breadcrumb>;
@@ -24,7 +25,7 @@ interface LdapLibraryCheckOutController extends Controller {
 
 export default class LdapLibraryCheckOutRoute extends Route {
   @service declare readonly flashMessages: FlashMessageService;
-  @service declare readonly router: RouterService;
+  @service('app-router') declare readonly router: RouterService;
 
   accountsRoute = 'vault.cluster.secrets.backend.ldap.libraries.library.details.accounts';
 
@@ -35,7 +36,7 @@ export default class LdapLibraryCheckOutRoute extends Route {
     }
   }
   model(_params: object, transition: Transition) {
-    const { ttl } = transition.to.queryParams;
+    const ttl = transition.to?.queryParams['ttl'];
     const library = this.modelFor('libraries.library') as LdapLibraryModel;
     return library.checkOutAccount(ttl);
   }
@@ -45,13 +46,15 @@ export default class LdapLibraryCheckOutRoute extends Route {
     transition: Transition
   ) {
     super.setupController(controller, resolvedModel, transition);
-
     const library = this.modelFor('libraries.library') as LdapLibraryModel;
+    const routeParams = (childResource: string) => {
+      return [library.backend, childResource];
+    };
     controller.breadcrumbs = [
       { label: library.backend, route: 'overview' },
-      { label: 'libraries', route: 'libraries' },
-      { label: library.name, route: 'libraries.library' },
-      { label: 'check-out' },
+      { label: 'Libraries', route: 'libraries' },
+      ...ldapBreadcrumbs(library.name, routeParams, libraryRoutes),
+      { label: 'Check-Out' },
     ];
   }
 

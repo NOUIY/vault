@@ -4,7 +4,7 @@
  */
 
 import RESTSerializer from '@ember-data/serializer/rest';
-import { AVAILABLE_PLUGIN_TYPES } from '../../utils/database-helpers';
+import { AVAILABLE_PLUGIN_TYPES } from '../../utils/model-helpers/database-helpers';
 
 export default RESTSerializer.extend({
   primaryKey: 'name',
@@ -29,6 +29,16 @@ export default RESTSerializer.extend({
       ...payload.data,
       ...payload.data.connection_details,
     };
+
+    // connection_details are spread above into the main body of response so we can remove redundant data
+    delete response.connection_details;
+    if (response?.connection_url) {
+      // this url can include interpolated data, such as: "{{username}}/{{password}}@localhost:1521/OraDoc.localhost"
+      // these curly brackets are returned by the API encoded: "%7B%7Busername%7D%7D/%7B%7Bpassword%7D%7D@localhost:1521/OraDoc.localhost"
+      // we decode here so the UI displays and submits the url in the correct format
+      response.connection_url = decodeURI(response.connection_url);
+    }
+
     if (payload.data.root_credentials_rotate_statements) {
       response.root_rotation_statements = payload.data.root_credentials_rotate_statements;
     }

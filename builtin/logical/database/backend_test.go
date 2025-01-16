@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/helper/builtinplugins"
 	"github.com/hashicorp/vault/helper/namespace"
+	"github.com/hashicorp/vault/helper/testhelpers/certhelpers"
 	"github.com/hashicorp/vault/helper/testhelpers/corehelpers"
 	postgreshelper "github.com/hashicorp/vault/helper/testhelpers/postgresql"
 	vaulthttp "github.com/hashicorp/vault/http"
@@ -96,6 +97,7 @@ func TestBackend_RoleUpgrade(t *testing.T) {
 	backend := &databaseBackend{}
 
 	roleExpected := &roleEntry{
+		Name: "test",
 		Statements: v4.Statements{
 			CreationStatements: "test",
 			Creation:           []string{"test"},
@@ -209,6 +211,8 @@ func TestBackend_config_connection(t *testing.T) {
 			"root_credentials_rotate_statements": []string{},
 			"password_policy":                    "",
 			"plugin_version":                     "",
+			"verify_connection":                  false,
+			"skip_static_role_import_rotation":   false,
 		}
 		configReq.Operation = logical.ReadOperation
 		resp, err = b.HandleRequest(namespace.RootContext(nil), configReq)
@@ -263,6 +267,8 @@ func TestBackend_config_connection(t *testing.T) {
 			"root_credentials_rotate_statements": []string{},
 			"password_policy":                    "",
 			"plugin_version":                     "",
+			"verify_connection":                  false,
+			"skip_static_role_import_rotation":   false,
 		}
 		configReq.Operation = logical.ReadOperation
 		resp, err = b.HandleRequest(namespace.RootContext(nil), configReq)
@@ -306,6 +312,8 @@ func TestBackend_config_connection(t *testing.T) {
 			"root_credentials_rotate_statements": []string{},
 			"password_policy":                    "",
 			"plugin_version":                     "",
+			"verify_connection":                  false,
+			"skip_static_role_import_rotation":   false,
 		}
 		configReq.Operation = logical.ReadOperation
 		resp, err = b.HandleRequest(namespace.RootContext(nil), configReq)
@@ -345,6 +353,8 @@ func TestBackend_config_connection(t *testing.T) {
 	assert.Equal(t, "plugin-test", eventSender.Events[2].Event.Metadata.AsMap()["name"])
 }
 
+// TestBackend_BadConnectionString tests that an error response resulting from
+// a failed connection does not expose the URL. The middleware should sanitize it.
 func TestBackend_BadConnectionString(t *testing.T) {
 	cluster, sys := getClusterPostgresDB(t)
 	defer cluster.Cleanup()
@@ -359,7 +369,7 @@ func TestBackend_BadConnectionString(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, _ := postgreshelper.PrepareTestContainer(t, "13.4-buster")
+	cleanup, _ := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	respCheck := func(req *logical.Request) {
@@ -410,8 +420,8 @@ func TestBackend_basic(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "13.4-buster")
-	defer cleanup()
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
+	t.Cleanup(cleanup)
 
 	// Configure a connection
 	data := map[string]interface{}{
@@ -658,6 +668,7 @@ func (s *singletonDBFactory) factory(context.Context, *logical.BackendConfig) (l
 }
 
 func TestBackend_connectionCrud(t *testing.T) {
+	t.Parallel()
 	dbFactory := &singletonDBFactory{}
 	cluster, sys := getClusterPostgresDBWithFactory(t, dbFactory.factory)
 	defer cluster.Cleanup()
@@ -665,7 +676,7 @@ func TestBackend_connectionCrud(t *testing.T) {
 	dbFactory.sys = sys
 	client := cluster.Cores[0].Client.Logical()
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "13.4-buster")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// Mount the database plugin.
@@ -715,7 +726,6 @@ func TestBackend_connectionCrud(t *testing.T) {
 		"allowed_roles":  []string{"plugin-role-test"},
 		"username":       "postgres",
 		"password":       "secret",
-		"private_key":    "PRIVATE_KEY",
 	})
 	if err != nil {
 		t.Fatalf("err:%s resp:%#v\n", err, resp)
@@ -736,9 +746,6 @@ func TestBackend_connectionCrud(t *testing.T) {
 	if _, exists := returnedConnectionDetails["password"]; exists {
 		t.Fatal("password should NOT be found in the returned config")
 	}
-	if _, exists := returnedConnectionDetails["private_key"]; exists {
-		t.Fatal("private_key should NOT be found in the returned config")
-	}
 
 	// Replace connection url with templated version
 	templatedConnURL := strings.ReplaceAll(connURL, "postgres:secret", "{{username}}:{{password}}")
@@ -748,7 +755,6 @@ func TestBackend_connectionCrud(t *testing.T) {
 		"allowed_roles":  []string{"plugin-role-test"},
 		"username":       "postgres",
 		"password":       "secret",
-		"private_key":    "PRIVATE_KEY",
 	})
 	if err != nil {
 		t.Fatalf("err:%s resp:%#v\n", err, resp)
@@ -765,6 +771,8 @@ func TestBackend_connectionCrud(t *testing.T) {
 		"root_credentials_rotate_statements": []any{},
 		"password_policy":                    "",
 		"plugin_version":                     "",
+		"verify_connection":                  false,
+		"skip_static_role_import_rotation":   false,
 	}
 	resp, err = client.Read("database/config/plugin-test")
 	if err != nil {
@@ -854,6 +862,57 @@ func TestBackend_connectionCrud(t *testing.T) {
 	}
 }
 
+func TestBackend_connectionSanitizePrivateKey(t *testing.T) {
+	t.Parallel()
+	dbFactory := &singletonDBFactory{}
+	cluster, sys := getClusterPostgresDBWithFactory(t, dbFactory.factory)
+	defer cluster.Cleanup()
+
+	dbFactory.sys = sys
+	client := cluster.Cores[0].Client.Logical()
+
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
+	defer cleanup()
+
+	// Mount the database plugin.
+	resp, err := client.Write("sys/mounts/database", map[string]interface{}{
+		"type": "database",
+	})
+	if err != nil {
+		t.Fatalf("err:%s resp:%#v\n", err, resp)
+	}
+
+	caCert := certhelpers.NewCert(t, certhelpers.CommonName("ca"), certhelpers.IsCA(true), certhelpers.SelfSign())
+	clientCert := certhelpers.NewCert(t, certhelpers.CommonName("postgres"), certhelpers.DNS("localhost"), certhelpers.Parent(caCert))
+
+	// Create a connection
+	resp, err = client.Write("database/config/plugin-test", map[string]interface{}{
+		"connection_url":    connURL,
+		"plugin_name":       "postgresql-database-plugin",
+		"allowed_roles":     []string{"plugin-role-test"},
+		"username":          "postgres",
+		"tls_certificate":   string(clientCert.CombinedPEM()),
+		"private_key":       string(clientCert.PrivateKeyPEM()),
+		"tls_ca":            string(caCert.CombinedPEM()),
+		"verify_connection": false,
+	})
+	if err != nil {
+		t.Fatalf("err:%s resp:%#v\n", err, resp)
+	}
+
+	resp, err = client.Read("database/config/plugin-test")
+	if err != nil {
+		t.Fatalf("err:%s resp:%#v\n", err, resp)
+	}
+	returnedConnectionDetails := resp.Data["connection_details"].(map[string]interface{})
+	if strings.Contains(returnedConnectionDetails["connection_url"].(string), "secret") {
+		t.Fatal("password should not be found in the connection url")
+	}
+	if _, exists := returnedConnectionDetails["private_key"]; exists {
+		t.Fatal("private_key should NOT be found in the returned config")
+	}
+}
+
 func TestBackend_roleCrud(t *testing.T) {
 	cluster, sys := getClusterPostgresDB(t)
 	defer cluster.Cleanup()
@@ -872,7 +931,7 @@ func TestBackend_roleCrud(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "13.4-buster")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// Configure a connection
@@ -1121,7 +1180,7 @@ func TestBackend_allowedRoles(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "13.4-buster")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// Configure a connection
@@ -1318,7 +1377,7 @@ func TestBackend_RotateRootCredentials(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "13.4-buster")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	connURL = strings.ReplaceAll(connURL, "postgres:secret", "{{username}}:{{password}}")
@@ -1451,7 +1510,7 @@ func TestBackend_ConnectionURL_redacted(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cleanup, u := postgreshelper.PrepareTestContainerWithPassword(t, "13.4-buster", tt.password)
+			cleanup, u := postgreshelper.PrepareTestContainerWithPassword(t, tt.password)
 			t.Cleanup(cleanup)
 
 			p, err := url.Parse(u)

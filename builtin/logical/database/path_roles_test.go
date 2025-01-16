@@ -222,7 +222,7 @@ func TestBackend_StaticRole_Config(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// create the database user
@@ -487,7 +487,7 @@ func TestBackend_StaticRole_ReadCreds(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// create the database user
@@ -667,7 +667,7 @@ func TestBackend_StaticRole_Updates(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// create the database user
@@ -966,7 +966,7 @@ func TestBackend_StaticRole_Role_name_check(t *testing.T) {
 	}
 	defer b.Cleanup(context.Background())
 
-	cleanup, connURL := postgreshelper.PrepareTestContainer(t, "")
+	cleanup, connURL := postgreshelper.PrepareTestContainer(t)
 	defer cleanup()
 
 	// create the database user
@@ -1085,6 +1085,76 @@ func TestBackend_StaticRole_Role_name_check(t *testing.T) {
 	if resp == nil || !resp.IsError() {
 		t.Fatalf("expected error, got none")
 	}
+}
+
+// TestStaticRole_NewCredentialGeneration verifies that new
+// credentials are generated if a retried credential continues
+// to fail
+func TestStaticRole_NewCredentialGeneration(t *testing.T) {
+	ctx := context.Background()
+	b, storage, mockDB := getBackend(t)
+	defer b.Cleanup(ctx)
+	configureDBMount(t, storage)
+
+	roleName := "hashicorp"
+	createRole(t, b, storage, mockDB, "hashicorp")
+
+	t.Run("rotation failures should generate new password on retry", func(t *testing.T) {
+		// Fail to rotate the role
+		generateWALFromFailedRotation(t, b, storage, mockDB, roleName)
+
+		// Get WAL
+		walIDs := requireWALs(t, storage, 1)
+		wal, err := b.findStaticWAL(ctx, storage, walIDs[0])
+		if err != nil || wal == nil {
+			t.Fatal(err)
+		}
+
+		// Store password
+		initialPassword := wal.NewPassword
+
+		// Rotate role manually and fail again #1 with same password
+		generateWALFromFailedRotation(t, b, storage, mockDB, roleName)
+
+		// Ensure WAL is deleted since retrying password failed
+		requireWALs(t, storage, 0)
+
+		// Successfully rotate the role
+		mockDB.On("UpdateUser", mock.Anything, mock.Anything).
+			Return(v5.UpdateUserResponse{}, nil).
+			Once()
+		_, err = b.HandleRequest(context.Background(), &logical.Request{
+			Operation: logical.UpdateOperation,
+			Path:      "rotate-role/" + roleName,
+			Storage:   storage,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Ensure WAL is flushed since request was successful
+		requireWALs(t, storage, 0)
+
+		// Read the credential
+		data := map[string]interface{}{}
+		req := &logical.Request{
+			Operation: logical.ReadOperation,
+			Path:      "static-creds/" + roleName,
+			Storage:   storage,
+			Data:      data,
+		}
+
+		resp, err := b.HandleRequest(namespace.RootContext(nil), req)
+		if err != nil || (resp != nil && resp.IsError()) {
+			t.Fatalf("err:%s resp:%#v\n", err, resp)
+		}
+
+		// Confirm successful rotation used new credential
+		// Assert previous failing credential is not being used
+		if resp.Data["password"] == initialPassword {
+			t.Fatalf("expected password to be different after second retry")
+		}
+	})
 }
 
 func TestWALsStillTrackedAfterUpdate(t *testing.T) {

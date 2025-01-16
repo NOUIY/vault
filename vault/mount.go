@@ -52,6 +52,11 @@ const (
 	mountTableType = "mounts"
 )
 
+func init() {
+	// Register the keys we use for mount tables
+	registerMountOrNamespaceTablePaths(coreMountConfigPath, coreLocalMountConfigPath)
+}
+
 // ListingVisibilityType represents the types for listing visibility
 type ListingVisibilityType string
 
@@ -105,7 +110,6 @@ var (
 		mountPathCubbyhole,
 		mountPathSystem,
 		"audit/",
-		mountPathIdentity,
 	}
 
 	// singletonMounts can only exist in one location and are
@@ -144,25 +148,15 @@ type MountTable struct {
 	Entries []*MountEntry `json:"entries"`
 }
 
+//go:generate enumer -type=MountMigrationStatus -trimprefix=MigrationStatus -transform=kebab
+
 type MountMigrationStatus int
 
 const (
-	MigrationInProgressStatus MountMigrationStatus = iota
-	MigrationSuccessStatus
-	MigrationFailureStatus
+	MigrationStatusInProgress MountMigrationStatus = iota
+	MigrationStatusSuccess
+	MigrationStatusFailure
 )
-
-func (m MountMigrationStatus) String() string {
-	switch m {
-	case MigrationInProgressStatus:
-		return "in-progress"
-	case MigrationSuccessStatus:
-		return "success"
-	case MigrationFailureStatus:
-		return "failure"
-	}
-	return "unknown"
-}
 
 type MountMigrationInfo struct {
 	SourceMount     string `json:"source_mount"`
@@ -355,19 +349,20 @@ type MountEntry struct {
 
 // MountConfig is used to hold settable options
 type MountConfig struct {
-	DefaultLeaseTTL           time.Duration         `json:"default_lease_ttl,omitempty" structs:"default_lease_ttl" mapstructure:"default_lease_ttl"` // Override for global default
-	MaxLeaseTTL               time.Duration         `json:"max_lease_ttl,omitempty" structs:"max_lease_ttl" mapstructure:"max_lease_ttl"`             // Override for global default
-	ForceNoCache              bool                  `json:"force_no_cache,omitempty" structs:"force_no_cache" mapstructure:"force_no_cache"`          // Override for global default
-	AuditNonHMACRequestKeys   []string              `json:"audit_non_hmac_request_keys,omitempty" structs:"audit_non_hmac_request_keys" mapstructure:"audit_non_hmac_request_keys"`
-	AuditNonHMACResponseKeys  []string              `json:"audit_non_hmac_response_keys,omitempty" structs:"audit_non_hmac_response_keys" mapstructure:"audit_non_hmac_response_keys"`
-	ListingVisibility         ListingVisibilityType `json:"listing_visibility,omitempty" structs:"listing_visibility" mapstructure:"listing_visibility"`
-	PassthroughRequestHeaders []string              `json:"passthrough_request_headers,omitempty" structs:"passthrough_request_headers" mapstructure:"passthrough_request_headers"`
-	AllowedResponseHeaders    []string              `json:"allowed_response_headers,omitempty" structs:"allowed_response_headers" mapstructure:"allowed_response_headers"`
-	TokenType                 logical.TokenType     `json:"token_type,omitempty" structs:"token_type" mapstructure:"token_type"`
-	AllowedManagedKeys        []string              `json:"allowed_managed_keys,omitempty" mapstructure:"allowed_managed_keys"`
-	UserLockoutConfig         *UserLockoutConfig    `json:"user_lockout_config,omitempty" mapstructure:"user_lockout_config"`
-	DelegatedAuthAccessors    []string              `json:"delegated_auth_accessors,omitempty" mapstructure:"delegated_auth_accessors"`
-	IdentityTokenKey          string                `json:"identity_token_key,omitempty" mapstructure:"identity_token_key"`
+	DefaultLeaseTTL            time.Duration         `json:"default_lease_ttl,omitempty" structs:"default_lease_ttl" mapstructure:"default_lease_ttl"` // Override for global default
+	MaxLeaseTTL                time.Duration         `json:"max_lease_ttl,omitempty" structs:"max_lease_ttl" mapstructure:"max_lease_ttl"`             // Override for global default
+	ForceNoCache               bool                  `json:"force_no_cache,omitempty" structs:"force_no_cache" mapstructure:"force_no_cache"`          // Override for global default
+	AuditNonHMACRequestKeys    []string              `json:"audit_non_hmac_request_keys,omitempty" structs:"audit_non_hmac_request_keys" mapstructure:"audit_non_hmac_request_keys"`
+	AuditNonHMACResponseKeys   []string              `json:"audit_non_hmac_response_keys,omitempty" structs:"audit_non_hmac_response_keys" mapstructure:"audit_non_hmac_response_keys"`
+	ListingVisibility          ListingVisibilityType `json:"listing_visibility,omitempty" structs:"listing_visibility" mapstructure:"listing_visibility"`
+	PassthroughRequestHeaders  []string              `json:"passthrough_request_headers,omitempty" structs:"passthrough_request_headers" mapstructure:"passthrough_request_headers"`
+	AllowedResponseHeaders     []string              `json:"allowed_response_headers,omitempty" structs:"allowed_response_headers" mapstructure:"allowed_response_headers"`
+	TokenType                  logical.TokenType     `json:"token_type,omitempty" structs:"token_type" mapstructure:"token_type"`
+	AllowedManagedKeys         []string              `json:"allowed_managed_keys,omitempty" mapstructure:"allowed_managed_keys"`
+	UserLockoutConfig          *UserLockoutConfig    `json:"user_lockout_config,omitempty" mapstructure:"user_lockout_config"`
+	DelegatedAuthAccessors     []string              `json:"delegated_auth_accessors,omitempty" mapstructure:"delegated_auth_accessors"`
+	IdentityTokenKey           string                `json:"identity_token_key,omitempty" mapstructure:"identity_token_key"`
+	TrimRequestTrailingSlashes bool                  `json:"trim_request_trailing_slashes,omitempty" mapstructure:"trim_request_trailing_slashes"` // If requests to this mount should have trailing slashes trimmed
 
 	// PluginName is the name of the plugin registered in the catalog.
 	//
@@ -395,20 +390,21 @@ type APIUserLockoutConfig struct {
 
 // APIMountConfig is an embedded struct of api.MountConfigInput
 type APIMountConfig struct {
-	DefaultLeaseTTL           string                `json:"default_lease_ttl" structs:"default_lease_ttl" mapstructure:"default_lease_ttl"`
-	MaxLeaseTTL               string                `json:"max_lease_ttl" structs:"max_lease_ttl" mapstructure:"max_lease_ttl"`
-	ForceNoCache              bool                  `json:"force_no_cache" structs:"force_no_cache" mapstructure:"force_no_cache"`
-	AuditNonHMACRequestKeys   []string              `json:"audit_non_hmac_request_keys,omitempty" structs:"audit_non_hmac_request_keys" mapstructure:"audit_non_hmac_request_keys"`
-	AuditNonHMACResponseKeys  []string              `json:"audit_non_hmac_response_keys,omitempty" structs:"audit_non_hmac_response_keys" mapstructure:"audit_non_hmac_response_keys"`
-	ListingVisibility         ListingVisibilityType `json:"listing_visibility,omitempty" structs:"listing_visibility" mapstructure:"listing_visibility"`
-	PassthroughRequestHeaders []string              `json:"passthrough_request_headers,omitempty" structs:"passthrough_request_headers" mapstructure:"passthrough_request_headers"`
-	AllowedResponseHeaders    []string              `json:"allowed_response_headers,omitempty" structs:"allowed_response_headers" mapstructure:"allowed_response_headers"`
-	TokenType                 string                `json:"token_type" structs:"token_type" mapstructure:"token_type"`
-	AllowedManagedKeys        []string              `json:"allowed_managed_keys,omitempty" mapstructure:"allowed_managed_keys"`
-	UserLockoutConfig         *UserLockoutConfig    `json:"user_lockout_config,omitempty" mapstructure:"user_lockout_config"`
-	PluginVersion             string                `json:"plugin_version,omitempty" mapstructure:"plugin_version"`
-	DelegatedAuthAccessors    []string              `json:"delegated_auth_accessors,omitempty" mapstructure:"delegated_auth_accessors"`
-	IdentityTokenKey          string                `json:"identity_token_key,omitempty" mapstructure:"identity_token_key"`
+	DefaultLeaseTTL            string                `json:"default_lease_ttl" structs:"default_lease_ttl" mapstructure:"default_lease_ttl"`
+	MaxLeaseTTL                string                `json:"max_lease_ttl" structs:"max_lease_ttl" mapstructure:"max_lease_ttl"`
+	ForceNoCache               bool                  `json:"force_no_cache" structs:"force_no_cache" mapstructure:"force_no_cache"`
+	AuditNonHMACRequestKeys    []string              `json:"audit_non_hmac_request_keys,omitempty" structs:"audit_non_hmac_request_keys" mapstructure:"audit_non_hmac_request_keys"`
+	AuditNonHMACResponseKeys   []string              `json:"audit_non_hmac_response_keys,omitempty" structs:"audit_non_hmac_response_keys" mapstructure:"audit_non_hmac_response_keys"`
+	ListingVisibility          ListingVisibilityType `json:"listing_visibility,omitempty" structs:"listing_visibility" mapstructure:"listing_visibility"`
+	PassthroughRequestHeaders  []string              `json:"passthrough_request_headers,omitempty" structs:"passthrough_request_headers" mapstructure:"passthrough_request_headers"`
+	AllowedResponseHeaders     []string              `json:"allowed_response_headers,omitempty" structs:"allowed_response_headers" mapstructure:"allowed_response_headers"`
+	TokenType                  string                `json:"token_type" structs:"token_type" mapstructure:"token_type"`
+	AllowedManagedKeys         []string              `json:"allowed_managed_keys,omitempty" mapstructure:"allowed_managed_keys"`
+	UserLockoutConfig          *UserLockoutConfig    `json:"user_lockout_config,omitempty" mapstructure:"user_lockout_config"`
+	PluginVersion              string                `json:"plugin_version,omitempty" mapstructure:"plugin_version"`
+	DelegatedAuthAccessors     []string              `json:"delegated_auth_accessors,omitempty" mapstructure:"delegated_auth_accessors"`
+	IdentityTokenKey           string                `json:"identity_token_key,omitempty" mapstructure:"identity_token_key"`
+	TrimRequestTrailingSlashes bool                  `json:"trim_request_trailing_slashes,omitempty" mapstructure:"trim_request_trailing_slashes"` // If requests to this mount should have trailing slashes trimmed
 
 	// PluginName is the name of the plugin registered in the catalog.
 	//
@@ -1195,15 +1191,17 @@ func (c *Core) remountSecretsEngine(ctx context.Context, src, dst namespace.Moun
 	srcMatch.Path = dst.MountPath
 
 	// Update the mount table
-	if err := c.persistMounts(ctx, c.mounts, &srcMatch.Local); err != nil {
-		srcMatch.Path = srcPath
-		srcMatch.Tainted = true
-		c.mountsLock.Unlock()
-		if err == logical.ErrReadOnly && c.perfStandby {
-			return err
-		}
+	if updateStorage {
+		if err := c.persistMounts(ctx, c.mounts, &srcMatch.Local); err != nil {
+			srcMatch.Path = srcPath
+			srcMatch.Tainted = true
+			c.mountsLock.Unlock()
+			if err == logical.ErrReadOnly && c.perfStandby {
+				return err
+			}
 
-		return fmt.Errorf("failed to update mount table with error %+v", err)
+			return fmt.Errorf("failed to update mount table with error %+v", err)
+		}
 	}
 
 	// Remount the backend
@@ -1973,7 +1971,7 @@ func (c *Core) createMigrationStatus(from, to namespace.MountPathDetails) (strin
 	migrationInfo := MountMigrationInfo{
 		SourceMount:     from.Namespace.Path + from.MountPath,
 		TargetMount:     to.Namespace.Path + to.MountPath,
-		MigrationStatus: MigrationInProgressStatus.String(),
+		MigrationStatus: MigrationStatusInProgress.String(),
 	}
 	c.mountMigrationTracker.Store(migrationID, migrationInfo)
 	return migrationID, nil

@@ -17,7 +17,6 @@ import (
 	"github.com/go-test/deep"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/vault/audit"
-	auditFile "github.com/hashicorp/vault/builtin/audit/file"
 	"github.com/hashicorp/vault/helper/namespace"
 	"github.com/hashicorp/vault/helper/testhelpers/corehelpers"
 	"github.com/hashicorp/vault/internalshared/configutil"
@@ -440,6 +439,35 @@ func TestSysUnseal_Reset(t *testing.T) {
 	}
 }
 
+// TestSysUnseal_NodeRemovedFromCluster verifies that a call to /sys/unseal fails
+// with an appropriate error when the node has been removed from a cluster.
+func TestSysUnseal_NodeRemovedFromCluster(t *testing.T) {
+	core, err := vault.TestCoreWithMockRemovableNodeHABackend(t, true)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+
+	// The value of key doesn't matter here, we just need to make a request.
+	resp := testHttpPut(t, "", addr+"/v1/sys/unseal", map[string]interface{}{
+		"key": "foo",
+	})
+
+	testResponseStatus(t, resp, 500)
+	var actual map[string]interface{}
+	testResponseBody(t, resp, &actual)
+
+	errors, ok := actual["errors"].([]interface{})
+	if !ok {
+		t.Fatalf("no errors in the response, request should be invalid")
+	}
+	expectedErrorMsg := "node was removed from a HA cluster"
+	if !strings.Contains(errors[0].(string), expectedErrorMsg) {
+		t.Fatalf("error message should contain %q", expectedErrorMsg)
+	}
+}
+
 // Test Seal's permissions logic, which is slightly different than normal code
 // paths in that it queries the ACL rather than having checkToken do it. This
 // is because it was abusing RootPaths in logical_system, but that caused some
@@ -573,7 +601,7 @@ func TestSysSealStatusRedaction(t *testing.T) {
 		EnableRaw:       true,
 		BuiltinRegistry: corehelpers.NewMockBuiltinRegistry(),
 		AuditBackends: map[string]audit.Factory{
-			"file": auditFile.Factory,
+			"file": audit.NewFileBackend,
 		},
 	}
 	core, _, token := vault.TestCoreUnsealedWithConfig(t, conf)

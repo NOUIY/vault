@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
+	"net"
 
 	"github.com/hashicorp/vault/sdk/helper/certutil"
 	"github.com/hashicorp/vault/sdk/helper/errutil"
@@ -21,22 +22,35 @@ type SignCertInput interface {
 	IsCA() bool
 	UseCSRValues() bool
 	GetPermittedDomains() []string
+	GetExcludedDomains() []string
+	GetPermittedIpRanges() ([]*net.IPNet, error)
+	GetExcludedIpRanges() ([]*net.IPNet, error)
+	GetPermittedEmailAddresses() []string
+	GetExcludedEmailAddresses() []string
+	GetPermittedUriDomains() []string
+	GetExcludedUriDomains() []string
 }
 
-func NewBasicSignCertInput(csr *x509.CertificateRequest, isCA bool, useCSRValues bool) BasicSignCertInput {
+func NewBasicSignCertInput(csr *x509.CertificateRequest, isCA, useCSRValues bool) BasicSignCertInput {
+	return NewBasicSignCertInputWithIgnore(csr, isCA, useCSRValues, false)
+}
+
+func NewBasicSignCertInputWithIgnore(csr *x509.CertificateRequest, isCA, useCSRValues, ignoreCsrSignature bool) BasicSignCertInput {
 	return BasicSignCertInput{
-		isCA:         isCA,
-		useCSRValues: useCSRValues,
-		csr:          csr,
+		isCA:               isCA,
+		useCSRValues:       useCSRValues,
+		csr:                csr,
+		ignoreCsrSignature: ignoreCsrSignature,
 	}
 }
 
 var _ SignCertInput = BasicSignCertInput{}
 
 type BasicSignCertInput struct {
-	isCA         bool
-	useCSRValues bool
-	csr          *x509.CertificateRequest
+	isCA               bool
+	useCSRValues       bool
+	csr                *x509.CertificateRequest
+	ignoreCsrSignature bool
 }
 
 func (b BasicSignCertInput) GetTTL() int {
@@ -91,6 +105,10 @@ func (b BasicSignCertInput) GetCSR() (*x509.CertificateRequest, error) {
 	return b.csr, nil
 }
 
+func (b BasicSignCertInput) IgnoreCSRSignature() bool {
+	return b.ignoreCsrSignature
+}
+
 func (b BasicSignCertInput) IsCA() bool {
 	return b.isCA
 }
@@ -100,6 +118,38 @@ func (b BasicSignCertInput) UseCSRValues() bool {
 }
 
 func (b BasicSignCertInput) GetPermittedDomains() []string {
+	return []string{}
+}
+
+func (b BasicSignCertInput) GetExcludedDomains() []string {
+	return []string{}
+}
+
+// GetPermittedIpRanges returns the permitted IP ranges for the name constraints extension.
+// ignore-nil-nil-function-check
+func (b BasicSignCertInput) GetPermittedIpRanges() ([]*net.IPNet, error) {
+	return nil, nil
+}
+
+// GetExcludedIpRanges returns the excluded IP ranges for the name constraints extension.
+// ignore-nil-nil-function-check
+func (b BasicSignCertInput) GetExcludedIpRanges() ([]*net.IPNet, error) {
+	return nil, nil
+}
+
+func (b BasicSignCertInput) GetPermittedEmailAddresses() []string {
+	return []string{}
+}
+
+func (b BasicSignCertInput) GetExcludedEmailAddresses() []string {
+	return []string{}
+}
+
+func (b BasicSignCertInput) GetPermittedUriDomains() []string {
+	return []string{}
+}
+
+func (b BasicSignCertInput) GetExcludedUriDomains() []string {
 	return []string{}
 }
 
@@ -274,6 +324,19 @@ func SignCert(b logical.SystemView, role *RoleEntry, entityInfo EntityInfo, caSi
 
 	if signInput.IsCA() {
 		creation.Params.PermittedDNSDomains = signInput.GetPermittedDomains()
+		creation.Params.ExcludedDNSDomains = signInput.GetExcludedDomains()
+		creation.Params.PermittedIPRanges, err = signInput.GetPermittedIpRanges()
+		if err != nil {
+			return nil, nil, errutil.UserError{Err: fmt.Sprintf("error parsinng permitted IP ranges: %v", err)}
+		}
+		creation.Params.ExcludedIPRanges, err = signInput.GetExcludedIpRanges()
+		if err != nil {
+			return nil, nil, errutil.UserError{Err: fmt.Sprintf("error parsinng excluded IP ranges: %v", err)}
+		}
+		creation.Params.PermittedEmailAddresses = signInput.GetPermittedEmailAddresses()
+		creation.Params.ExcludedEmailAddresses = signInput.GetExcludedEmailAddresses()
+		creation.Params.PermittedURIDomains = signInput.GetPermittedUriDomains()
+		creation.Params.ExcludedURIDomains = signInput.GetExcludedUriDomains()
 	} else {
 		for _, ext := range csr.Extensions {
 			if ext.Id.Equal(certutil.ExtensionBasicConstraintsOID) {

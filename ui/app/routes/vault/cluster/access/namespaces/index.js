@@ -8,6 +8,7 @@ import Route from '@ember/routing/route';
 import UnloadModel from 'vault/mixins/unload-model-route';
 
 export default Route.extend(UnloadModel, {
+  pagination: service(),
   store: service(),
 
   queryParams: {
@@ -27,7 +28,7 @@ export default Route.extend(UnloadModel, {
 
   model(params) {
     if (this.version.hasNamespaces) {
-      return this.store
+      return this.pagination
         .lazyPaginatedQuery('namespace', {
           responsePath: 'data.keys',
           page: Number(params?.page) || 1,
@@ -63,7 +64,7 @@ export default Route.extend(UnloadModel, {
   actions: {
     error(error, transition) {
       /* eslint-disable-next-line ember/no-controller-access-in-routes */
-      const hasModel = this.controllerFor(this.routeName).get('hasModel');
+      const hasModel = this.controllerFor(this.routeName).hasModel;
       if (hasModel && error.httpStatus === 404) {
         this.set('has404', true);
         transition.abort();
@@ -74,12 +75,12 @@ export default Route.extend(UnloadModel, {
     willTransition(transition) {
       window.scrollTo(0, 0);
       if (!transition || transition.targetName !== this.routeName) {
-        this.store.clearAllDatasets();
+        this.pagination.clearDataset();
       }
       return true;
     },
     reload() {
-      this.store.clearAllDatasets();
+      this.pagination.clearDataset();
       this.refresh();
     },
   },

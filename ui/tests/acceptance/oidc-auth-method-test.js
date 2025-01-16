@@ -12,6 +12,7 @@ import { fakeWindow, buildMessage } from '../helpers/oidc-window-stub';
 import sinon from 'sinon';
 import { later, _cancelTimers as cancelTimers } from '@ember/runloop';
 import { Response } from 'miragejs';
+import { setupTotpMfaResponse } from 'vault/tests/helpers/auth/mfa-helpers';
 
 module('Acceptance | oidc auth method', function (hooks) {
   setupApplicationTest(hooks);
@@ -69,7 +70,8 @@ module('Acceptance | oidc auth method', function (hooks) {
     later(() => {
       window.postMessage(buildMessage().data, window.origin);
       cancelTimers();
-    }, 50);
+    }, 100);
+
     await click('[data-test-auth-submit]');
   });
 
@@ -98,6 +100,7 @@ module('Acceptance | oidc auth method', function (hooks) {
       window.postMessage(buildMessage().data, window.origin);
       cancelTimers();
     }, 50);
+
     await click('[data-test-auth-submit]');
   });
 
@@ -109,6 +112,7 @@ module('Acceptance | oidc auth method', function (hooks) {
       window.postMessage(buildMessage().data, window.origin);
       cancelTimers();
     }, 50);
+
     await click('[data-test-auth-submit]');
     await waitUntil(() => find('[data-test-user-menu-trigger]'));
     await click('[data-test-user-menu-trigger]');
@@ -151,5 +155,21 @@ module('Acceptance | oidc auth method', function (hooks) {
     await fillIn('[data-test-role]', 'test');
     await click('[data-test-auth-submit]');
     assert.dom('[data-test-message-error-description]').hasText('Error fetching role: permission denied');
+  });
+
+  test('it prompts mfa if configured', async function (assert) {
+    assert.expect(1);
+
+    this.setupMocks(assert);
+    this.server.get('/auth/foo/oidc/callback', () => setupTotpMfaResponse('foo'));
+    await this.selectMethod('oidc');
+    later(() => {
+      window.postMessage(buildMessage().data, window.origin);
+      cancelTimers();
+    }, 50);
+
+    await click('[data-test-auth-submit]');
+    await waitUntil(() => find('[data-test-mfa-form]'));
+    assert.dom('[data-test-mfa-form]').exists('it renders TOTP MFA form');
   });
 });

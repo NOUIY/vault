@@ -13,7 +13,7 @@ import type Controller from '@ember/controller';
 import type Transition from '@ember/routing/transition';
 import type { Breadcrumb } from 'vault/vault/app-types';
 
-interface LdapRolesCreateController extends Controller {
+interface RouteController extends Controller {
   breadcrumbs: Array<Breadcrumb>;
   model: LdapRoleModel;
 }
@@ -27,17 +27,13 @@ export default class LdapRolesCreateRoute extends Route {
     return this.store.createRecord('ldap/role', { backend });
   }
 
-  setupController(
-    controller: LdapRolesCreateController,
-    resolvedModel: LdapRoleModel,
-    transition: Transition
-  ) {
+  setupController(controller: RouteController, resolvedModel: LdapRoleModel, transition: Transition) {
     super.setupController(controller, resolvedModel, transition);
 
     controller.breadcrumbs = [
       { label: resolvedModel.backend, route: 'overview' },
-      { label: 'roles', route: 'roles' },
-      { label: 'create' },
+      { label: 'Roles', route: 'roles' },
+      { label: 'Create' },
     ];
   }
 }

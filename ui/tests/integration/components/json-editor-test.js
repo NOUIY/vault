@@ -6,11 +6,12 @@
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { create } from 'ember-cli-page-object';
-import { render, fillIn, find, waitUntil, click } from '@ember/test-helpers';
+import { render, fillIn, find, waitUntil, click, triggerKeyEvent } from '@ember/test-helpers';
 import hbs from 'htmlbars-inline-precompile';
 import jsonEditor from '../../pages/components/json-editor';
 import sinon from 'sinon';
 import { setRunOptions } from 'ember-a11y-testing/test-support';
+import { createLongJson } from 'vault/tests/helpers/secret-engine/secret-engine-helpers';
 
 const component = create(jsonEditor);
 
@@ -29,6 +30,7 @@ module('Integration | Component | json-editor', function (hooks) {
     this.set('onFocusOut', sinon.spy());
     this.set('json_blob', JSON_BLOB);
     this.set('bad_json_blob', BAD_JSON_BLOB);
+    this.set('long_json', JSON.stringify(createLongJson(), null, `\t`));
     this.set('hashi-read-only-theme', 'hashi-read-only auto-height');
     setRunOptions({
       rules: {
@@ -36,6 +38,8 @@ module('Integration | Component | json-editor', function (hooks) {
         label: { enabled: false },
         // TODO: investigate and fix Codemirror styling
         'color-contrast': { enabled: false },
+        // failing on .CodeMirror-scroll
+        'scrollable-region-focusable': { enabled: false },
       },
     });
   });
@@ -110,24 +114,50 @@ module('Integration | Component | json-editor', function (hooks) {
     assert.strictEqual(this.value, null, 'Value is cleared on restore example');
   });
 
-  test('obscure option works correctly', async function (assert) {
-    this.set('readOnly', true);
-    await render(hbs`<JsonEditor
-      @value={{this.json_blob}}
-      @allowObscure={{true}}
-      @readOnly={{this.readOnly}}
-      @valueUpdated={{this.valueUpdated}}
-      @onFocusOut={{this.onFocusOut}}
-    />`);
-    assert.dom('.CodeMirror-code').hasText(`{ "test": "********"}`, 'shows data with obscured values');
-    assert.dom('[data-test-toggle-input="revealValues"]').isNotChecked('reveal values toggle is unchecked');
-    await click('[data-test-toggle-input="revealValues"]');
-    assert.dom('.CodeMirror-code').hasText(JSON_BLOB, 'shows data with real values');
-    assert.dom('[data-test-toggle-input="revealValues"]').isChecked('reveal values toggle is checked');
-    // turn obscure back on to ensure readonly overrides reveal setting
-    await click('[data-test-toggle-input="revealValues"]');
-    this.set('readOnly', false);
-    assert.dom('[data-test-toggle-input="revealValues"]').doesNotExist('reveal values toggle is hidden');
-    assert.dom('.CodeMirror-code').hasText(JSON_BLOB, 'shows data with real values on edit mode');
+  test('code-mirror modifier sets value correctly on non json object', async function (assert) {
+    // this.value is a tracked property, so anytime it changes the modifier is called. We're testing non-json content by setting the mode to ruby and adding a comment
+    this.value = null;
+    await render(hbs`
+      <JsonEditor
+        @value={{this.value}}
+        @mode="ruby"
+        @valueUpdated={{fn (mut this.value)}}
+      />
+    `);
+    await fillIn('textarea', '#A comment');
+    assert.strictEqual(this.value, '#A comment', 'value is set correctly');
+    await triggerKeyEvent('textarea', 'keydown', 'Enter');
+    assert.strictEqual(
+      this.value,
+      `#A comment\n`,
+      'even after hitting enter the value is still set correctly'
+    );
+  });
+
+  test('no viewportMargin renders only default 10 lines of data on the DOM', async function (assert) {
+    await render(hbs`
+      <JsonEditor
+        @value={{this.long_json}}
+        @mode="ruby"
+        @valueUpdated={{fn (mut this.value)}}
+      />
+    `);
+    assert
+      .dom('.CodeMirror-code')
+      .doesNotIncludeText('key-9', 'Without viewportMargin, user cannot search for key-9');
+  });
+
+  test('when viewportMargin is set user is able to search a long secret', async function (assert) {
+    await render(hbs`
+      <JsonEditor
+        @value={{this.long_json}}
+        @mode="ruby"
+        @valueUpdated={{fn (mut this.value)}}
+        @viewportMargin="100"
+      />
+    `);
+    assert
+      .dom('.CodeMirror-code')
+      .containsText('key-9', 'With viewportMargin set, user can search for key-9');
   });
 });

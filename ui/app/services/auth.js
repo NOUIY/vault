@@ -5,18 +5,18 @@
 
 import Ember from 'ember';
 import { task, timeout } from 'ember-concurrency';
-import { getOwner } from '@ember/application';
+import { getOwner } from '@ember/owner';
 import { isArray } from '@ember/array';
 import { computed, get } from '@ember/object';
 import { alias } from '@ember/object/computed';
 import Service, { inject as service } from '@ember/service';
 import { capitalize } from '@ember/string';
-import fetch from 'fetch';
 import { resolve, reject } from 'rsvp';
 
 import getStorage from 'vault/lib/token-storage';
 import ENV from 'vault/config/environment';
 import { allSupportedAuthBackends } from 'vault/helpers/supported-auth-backends';
+import { addToArray } from 'vault/helpers/add-to-array';
 
 const TOKEN_SEPARATOR = '☃';
 const TOKEN_PREFIX = 'vault-';
@@ -29,6 +29,7 @@ export default Service.extend({
   permissions: service(),
   currentCluster: service(),
   router: service(),
+  store: service(),
   namespaceService: service('namespace'),
 
   IDLE_TIMEOUT: 3 * 60e3,
@@ -80,8 +81,10 @@ export default Service.extend({
     if (!tokenName) {
       return;
     }
+
     const { tokenExpirationEpoch } = this.getTokenData(tokenName);
     const expirationDate = new Date(0);
+
     return tokenExpirationEpoch ? expirationDate.setUTCMilliseconds(tokenExpirationEpoch) : null;
   }),
 
@@ -208,21 +211,32 @@ export default Service.extend({
     return this.ajax(url, 'POST', { namespace });
   },
 
+  async lookupSelf(token) {
+    return this.store
+      .adapterFor('application')
+      .ajax('/v1/auth/token/lookup-self', 'GET', { headers: { 'X-Vault-Token': token } });
+  },
+
   revokeCurrentToken() {
     const namespace = this.authData.userRootNamespace;
     const url = '/v1/auth/token/revoke-self';
     return this.ajax(url, 'POST', { namespace });
   },
 
-  calculateExpiration(resp) {
-    const now = this.now();
+  calculateExpiration(resp, now) {
     const ttl = resp.ttl || resp.lease_duration;
-    const tokenExpirationEpoch = now + ttl * 1e3;
-    this.set('expirationCalcTS', now);
-    return {
-      ttl,
-      tokenExpirationEpoch,
-    };
+    const tokenExpirationEpoch = resp.expire_time ? new Date(resp.expire_time).getTime() : now + ttl * 1e3;
+
+    return { ttl, tokenExpirationEpoch };
+  },
+
+  setExpirationSettings(resp, now) {
+    if (resp.renewable) {
+      this.set('expirationCalcTS', now);
+      this.set('allowExpiration', false);
+    } else {
+      this.set('allowExpiration', true);
+    }
   },
 
   calculateRootNamespace(currentNamespace, namespace_path, backend) {
@@ -248,9 +262,8 @@ export default Service.extend({
     return userRootNamespace;
   },
 
-  persistAuthData() {
+  async persistAuthData() {
     const [firstArg, resp] = arguments;
-    const tokens = this.tokens;
     const currentNamespace = this.namespaceService.path || '';
     // dropdown vs tab format
     const mountPath = firstArg?.data?.path || firstArg?.selectedAuth;
@@ -269,18 +282,12 @@ export default Service.extend({
       mountPath,
       ...BACKENDS.find((b) => b.type === backend),
     };
-    let displayName;
-    if (isArray(currentBackend.displayNamePath)) {
-      displayName = currentBackend.displayNamePath.map((name) => get(resp, name)).join('/');
-    } else {
-      displayName = get(resp, currentBackend.displayNamePath);
-    }
 
     const { entity_id, policies, renewable, namespace_path } = resp;
     const userRootNamespace = this.calculateRootNamespace(currentNamespace, namespace_path, backend);
     const data = {
       userRootNamespace,
-      displayName,
+      displayName: null, // set below
       backend: currentBackend,
       token: resp.client_token || get(resp, currentBackend.tokenPath),
       policies,
@@ -296,22 +303,53 @@ export default Service.extend({
       resp.policies
     );
 
-    if (resp.renewable) {
-      Object.assign(data, this.calculateExpiration(resp));
-    }
+    const now = this.now();
 
-    if (!data.displayName) {
-      data.displayName = (this.getTokenData(tokenName) || {}).displayName;
-    }
-    tokens.addObject(tokenName);
-    this.set('tokens', tokens);
-    this.set('allowExpiration', false);
+    Object.assign(data, this.calculateExpiration(resp, now));
+    this.setExpirationSettings(resp, now);
+
+    // ensure we don't call renew-self within tests
+    // this is intentionally not included in setExpirationSettings so we can unit test that method
+    if (Ember.testing) this.set('allowExpiration', false);
+
+    data.displayName = await this.setDisplayName(resp, currentBackend.displayNamePath, tokenName);
+
+    this.set('tokens', addToArray(this.tokens, tokenName));
     this.setTokenData(tokenName, data);
+
     return resolve({
       namespace: currentNamespace || data.userRootNamespace,
       token: tokenName,
       isRoot: policies.includes('root'),
     });
+  },
+
+  async setDisplayName(resp, displayNamePath, tokenName) {
+    let displayName;
+
+    // first check if auth response includes a display name
+    displayName = isArray(displayNamePath)
+      ? displayNamePath.map((name) => get(resp, name)).join('/')
+      : get(resp, displayNamePath);
+
+    // if not, check stored token data
+    if (!displayName) {
+      displayName = (this.getTokenData(tokenName) || {}).displayName;
+    }
+
+    // this is a workaround for OIDC/SAML methods WITH mfa configured. at this time mfa/validate endpoint does not
+    // return display_name (or metadata that includes it) for this auth combination.
+    // this if block can be removed if/when the API returns display_name on the mfa/validate response.
+    if (!displayName) {
+      // if still nothing, request token data as a last resort
+      try {
+        const { data } = await this.lookupSelf(resp.client_token);
+        displayName = data.display_name;
+      } catch {
+        // silently fail since we're just trying to set a display name
+      }
+    }
+    return displayName;
   },
 
   setTokenData(token, data) {
@@ -329,9 +367,9 @@ export default Service.extend({
   renew() {
     const tokenName = this.currentTokenName;
     const currentlyRenewing = this.isRenewing;
-    if (currentlyRenewing) {
-      return;
-    }
+
+    if (currentlyRenewing) return;
+
     this.isRenewing = true;
     return this.renewCurrentToken().then(
       (resp) => {
@@ -359,6 +397,7 @@ export default Service.extend({
   shouldRenew() {
     const now = this.now();
     const lastFetch = this.lastFetch;
+    // renewAfterEpoch is a unix timestamp of login time + half of ttl
     const renewTime = this.renewAfterEpoch;
     if (!this.currentTokenName || this.tokenExpired || this.allowExpiration || !renewTime) {
       return false;
@@ -377,7 +416,7 @@ export default Service.extend({
     const now = this.now();
     this.set('lastFetch', timestamp);
     // if expiration was allowed and we're over half the ttl we want to go ahead and renew here
-    if (this.allowExpiration && now >= this.renewAfterEpoch) {
+    if (this.allowExpiration && this.renewAfterEpoch && now >= this.renewAfterEpoch) {
       this.renew();
     }
     this.set('allowExpiration', false);

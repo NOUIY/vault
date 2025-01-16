@@ -1,10 +1,10 @@
 ---
 layout: docs
-page_title: Agent Sidecar Injector Annotations
-description: This section documents the configurable annotations for the Vault Agent Injector.
+page_title: Vault Agent Injector annotations
+description: Learn about the configurable annotations for the Vault Agent Injector.
 ---
 
-# Annotations
+# Vault Agent Injector annotations
 
 The following are the available annotations for the injector. These annotations
 are organized into two sections: agent and vault. All of the annotations below
@@ -28,7 +28,7 @@ them, optional commands to run, etc.
 
 - `vault.hashicorp.com/agent-image` - name of the Vault docker image to use. This
   value overrides the default image configured in the injector and is usually
-  not needed. Defaults to `hashicorp/vault:1.15.6`.
+  not needed. Defaults to `hashicorp/vault:1.18.2`.
 
 - `vault.hashicorp.com/agent-init-first` - configures the pod to run the Vault Agent
   init container first if `true` (last if `false`). This is useful when other init
@@ -54,6 +54,20 @@ them, optional commands to run, etc.
   `vault.hashicorp.com/agent-inject-template-foobar`. This should map to the same
   unique value provided in `vault.hashicorp.com/agent-inject-secret-`. If not provided,
   a default generic template is used.
+
+- `vault.hashicorp.com/agent-template-left-delim` - configures the left delimiter for Vault Agent to
+  use when rendering a secret template. The name of the template is any unique string after
+  `vault.hashicorp.com/agent-template-left-delim-`, such as
+  `vault.hashicorp.com/agent-template-left-delim-foobar`. This should map to the same unique value
+  provided in `vault.hashicorp.com/agent-inject-template-`. If not provided, a default left
+  delimiter is used as defined by [Vault Agent Template Config](/vault/docs/agent-and-proxy/agent/template#left_delimiter).
+
+- `vault.hashicorp.com/agent-template-right-delim` - configures the right delimiter for Vault Agent
+  to use when rendering a secret template. The name of the template is any unique string after
+  `vault.hashicorp.com/agent-template-right-delim-`, such as
+  `vault.hashicorp.com/agent-template-right-delim-foobar`. This should map to the same unique value
+  provided in `vault.hashicorp.com/agent-inject-template-`. If not provided, a default right
+  delimiter is used as defined by [Vault Agent Template Config](/vault/docs/agent-and-proxy/agent/template#right_delimiter).
 
 - `vault.hashicorp.com/error-on-missing-key` - configures whether Vault Agent
   should exit with an error when accessing a struct or map field/key that does
@@ -171,7 +185,8 @@ them, optional commands to run, etc.
 
 - `vault.hashicorp.com/agent-pre-populate` - configures whether an init container
   is included to pre-populate the shared memory volume with secrets prior to the
-  containers starting.
+  containers starting. This should be set to a `true` or `false` value. Defaults
+  to `true`.
 
 - `vault.hashicorp.com/agent-pre-populate-only` - configures whether an init container
   is the only injected container. If true, no sidecar container will be injected

@@ -40,7 +40,7 @@ var (
 
 	// these metadata fields will have the plugin mount path prepended to them
 	metadataPrependPathFields = []string{
-		"path",
+		logical.EventMetadataPath,
 		logical.EventMetadataDataPath,
 	}
 )
@@ -237,6 +237,9 @@ func (bus *EventBus) subscribeInternal(ctx context.Context, namespacePathPattern
 	var filterNode *eventlogger.Filter
 	if cluster != nil {
 		filterNode, err = newClusterFilterNode(bus.filters, clusterID(*cluster))
+		if err != nil {
+			return nil, nil, err
+		}
 	} else {
 		filterNode, err = newFilterNode(namespacePathPatterns, pattern, bexprFilter)
 		if err != nil {

@@ -4,7 +4,10 @@
 package raftha
 
 import (
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
@@ -14,6 +17,7 @@ import (
 	vaulthttp "github.com/hashicorp/vault/http"
 	"github.com/hashicorp/vault/sdk/helper/logging"
 	"github.com/hashicorp/vault/vault"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRaft_HA_NewCluster(t *testing.T) {
@@ -51,6 +55,20 @@ func TestRaft_HA_NewCluster(t *testing.T) {
 		t.Run("with_client_certs", func(t *testing.T) {
 			testRaftHANewCluster(t, consulstorage.MakeConsulBackend, true)
 		})
+	})
+}
+
+// TestRaftHA_Recover_Cluster test that we can recover data and re-boostrap a cluster
+// that was created with raft HA enabled but is not using raft as the storage backend.
+func TestRaftHA_Recover_Cluster(t *testing.T) {
+	logger := logging.NewVaultLogger(hclog.Debug).Named(t.Name())
+	t.Run("file", func(t *testing.T) {
+		physBundle := teststorage.MakeFileBackend(t, logger)
+		testRaftHARecoverCluster(t, physBundle, logger)
+	})
+	t.Run("inmem", func(t *testing.T) {
+		physBundle := teststorage.MakeInmemBackend(t, logger)
+		testRaftHARecoverCluster(t, physBundle, logger)
 	})
 }
 
@@ -115,6 +133,97 @@ func testRaftHANewCluster(t *testing.T, bundler teststorage.PhysicalBackendBundl
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// testRaftHARecoverCluster : in this test, we're going to create a raft HA cluster and store a test secret in a KVv2
+// We're going to simulate an outage and destroy the cluster but we'll keep the storage backend.
+// We'll recreate a new cluster with the same storage backend and ensure that we can recover using
+// sys/storage/raft/bootstrap. We'll check that the new cluster
+// is functional and no data was lost: we can get the test secret from the KVv2.
+func testRaftHARecoverCluster(t *testing.T, physBundle *vault.PhysicalBackendBundle, logger hclog.Logger) {
+	opts := vault.TestClusterOptions{
+		HandlerFunc: vaulthttp.Handler,
+		// We're not testing the HA, only that it can be recovered. No need for multiple cores.
+		NumCores: 1,
+	}
+
+	haStorage, haCleanup := teststorage.MakeReusableRaftHAStorage(t, logger, opts.NumCores, physBundle)
+	defer haCleanup()
+	haStorage.Setup(nil, &opts)
+	cluster := vault.NewTestCluster(t, nil, &opts)
+
+	var (
+		clusterBarrierKeys [][]byte
+		clusterRootToken   string
+	)
+	clusterBarrierKeys = cluster.BarrierKeys
+	clusterRootToken = cluster.RootToken
+	leaderCore := cluster.Cores[0]
+	testhelpers.EnsureCoreUnsealed(t, cluster, leaderCore)
+
+	leaderClient := cluster.Cores[0].Client
+	leaderClient.SetToken(clusterRootToken)
+
+	// Mount a KVv2 backend to store a test data
+	err := leaderClient.Sys().Mount("kv", &api.MountInput{
+		Type: "kv-v2",
+	})
+	require.NoError(t, err)
+
+	kvData := map[string]interface{}{
+		"data": map[string]interface{}{
+			"kittens": "awesome",
+		},
+	}
+
+	// Store the test data in the KVv2 backend
+	_, err = leaderClient.Logical().Write("kv/data/test_known_data", kvData)
+	require.NoError(t, err)
+
+	// We now have a raft HA cluster with a KVv2 backend enabled and a test data.
+	// We're now going to delete the cluster and create a new raft HA cluster with the same backend storage
+	// and ensure we can recover to a working vault cluster and don't lose the data from the backend storage.
+
+	opts = vault.TestClusterOptions{
+		HandlerFunc: vaulthttp.Handler,
+		// We're not testing the HA, only that it can be recovered. No need for multiple cores.
+		NumCores: 1,
+		// It's already initialized as we keep the same storage backend.
+		SkipInit: true,
+	}
+	haStorage, haCleanup = teststorage.MakeReusableRaftHAStorage(t, logger, opts.NumCores, physBundle)
+	defer haCleanup()
+	haStorage.Setup(nil, &opts)
+	clusterRestored := vault.NewTestCluster(t, nil, &opts)
+
+	clusterRestored.BarrierKeys = clusterBarrierKeys
+	clusterRestored.RootToken = clusterRootToken
+	leaderCoreRestored := clusterRestored.Cores[0]
+
+	testhelpers.EnsureCoresUnsealed(t, clusterRestored)
+
+	leaderClientRestored := clusterRestored.Cores[0].Client
+
+	// We now reset the TLS keyring and bootstrap the cluster again.
+	_, err = leaderClientRestored.Logical().Write("sys/storage/raft/bootstrap", nil)
+	require.NoError(t, err)
+
+	vault.TestWaitActive(t, leaderCoreRestored.Core)
+	// Core should be active and cluster in a working state. We should be able to
+	// read the data from the KVv2 backend.
+	leaderClientRestored.SetToken(clusterRootToken)
+	secretRaw, err := leaderClientRestored.Logical().Read("kv/data/test_known_data")
+	require.NoError(t, err)
+
+	data := secretRaw.Data["data"]
+	dataAsMap := data.(map[string]interface{})
+	require.NotNil(t, dataAsMap)
+	require.Equal(t, "awesome", dataAsMap["kittens"])
+
+	// Ensure no writes are happening before we try to clean it up, to prevent
+	// issues deleting the files.
+	clusterRestored.EnsureCoresSealed(t)
+	clusterRestored.Cleanup()
 }
 
 func TestRaft_HA_ExistingCluster(t *testing.T) {
@@ -220,4 +329,53 @@ func TestRaft_HA_ExistingCluster(t *testing.T) {
 	}
 
 	updateCluster(t)
+}
+
+// TestRaftHACluster_Removed_ReAdd creates a raft HA cluster with a file
+// backend. The test adds two standbys to the cluster and then removes one of
+// them. The removed follower tries to re-join, and the test verifies that it
+// errors and cannot join.
+func TestRaftHACluster_Removed_ReAdd(t *testing.T) {
+	t.Parallel()
+	var conf vault.CoreConfig
+	opts := vault.TestClusterOptions{HandlerFunc: vaulthttp.Handler}
+	teststorage.RaftHASetup(&conf, &opts, teststorage.MakeFileBackend)
+	cluster := vault.NewTestCluster(t, &conf, &opts)
+	defer cluster.Cleanup()
+	vault.TestWaitActive(t, cluster.Cores[0].Core)
+
+	leader := cluster.Cores[0]
+	follower := cluster.Cores[2]
+	joinReq := &api.RaftJoinRequest{LeaderCACert: string(cluster.CACertPEM)}
+	_, err := follower.Client.Sys().RaftJoin(joinReq)
+	require.NoError(t, err)
+	_, err = cluster.Cores[1].Client.Sys().RaftJoin(joinReq)
+	require.NoError(t, err)
+
+	testhelpers.RetryUntil(t, 3*time.Second, func() error {
+		resp, err := leader.Client.Sys().RaftAutopilotState()
+		if err != nil {
+			return err
+		}
+		if len(resp.Servers) != 3 {
+			return errors.New("need 3 servers")
+		}
+		for serverID, server := range resp.Servers {
+			if !server.Healthy {
+				return fmt.Errorf("server %s is unhealthy", serverID)
+			}
+			if server.NodeType != "voter" {
+				return fmt.Errorf("server %s has type %s", serverID, server.NodeType)
+			}
+		}
+		return nil
+	})
+	_, err = leader.Client.Logical().Write("/sys/storage/raft/remove-peer", map[string]interface{}{
+		"server_id": follower.NodeID,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, follower.Sealed, 10*time.Second, 250*time.Millisecond)
+
+	_, err = follower.Client.Sys().RaftJoin(joinReq)
+	require.Error(t, err)
 }

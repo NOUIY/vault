@@ -9,12 +9,12 @@ import Controller from '@ember/controller';
 
 export default Controller.extend({
   flashMessages: service(),
-  router: service(),
+  router: service('app-router'),
   rm: service('replication-mode'),
   replicationMode: alias('rm.mode'),
   actions: {
     resetConfig(config) {
-      if (config.get('isNew')) {
+      if (config.isNew) {
         config.setProperties({
           mode: null,
           paths: [],

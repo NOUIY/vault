@@ -108,6 +108,10 @@ type Backend struct {
 	// RunningVersion is the optional version that will be self-reported
 	RunningVersion string
 
+	// RotateCredential is the callback function used by the RotationManager
+	// to communicate with a plugin on when to rotate a credential
+	RotateCredential func(context.Context, *logical.Request) error
+
 	logger  log.Logger
 	system  logical.SystemView
 	events  logical.EventSender
@@ -216,11 +220,13 @@ func (b *Backend) HandleRequest(ctx context.Context, req *logical.Request) (*log
 		return b.handleRevokeRenew(ctx, req)
 	case logical.RollbackOperation:
 		return b.handleRollback(ctx, req)
+	case logical.RotationOperation:
+		return b.handleRotation(ctx, req)
 	}
 
 	// If the path is empty and it is a help operation, handle that.
 	if req.Path == "" && req.Operation == logical.HelpOperation {
-		return b.handleRootHelp(req)
+		return b.handleRootHelp(ctx, req)
 	}
 
 	// Find the matching route
@@ -548,7 +554,7 @@ func (b *Backend) route(path string) (*Path, map[string]string) {
 	return nil, nil
 }
 
-func (b *Backend) handleRootHelp(req *logical.Request) (*logical.Response, error) {
+func (b *Backend) handleRootHelp(ctx context.Context, req *logical.Request) (*logical.Response, error) {
 	// Build a mapping of the paths and get the paths alphabetized to
 	// make the output prettier.
 	pathsMap := make(map[string]*Path)
@@ -596,6 +602,10 @@ func (b *Backend) handleRootHelp(req *logical.Request) (*logical.Response, error
 		vaultVersion = env.VaultVersion
 	}
 
+	redactVersion, _, _, _ := logical.CtxRedactionSettingsValue(ctx)
+	if redactVersion {
+		vaultVersion = ""
+	}
 	doc := NewOASDocument(vaultVersion)
 	if err := documentPaths(b, requestResponsePrefix, doc); err != nil {
 		b.Logger().Warn("error generating OpenAPI", "error", err)
@@ -659,6 +669,19 @@ func (b *Backend) handleRollback(ctx context.Context, req *logical.Request) (*lo
 		}
 	}
 	return resp, merr.ErrorOrNil()
+}
+
+// handleRotation invokes the RotateCredential func set on the backend.
+func (b *Backend) handleRotation(ctx context.Context, req *logical.Request) (*logical.Response, error) {
+	if b.RotateCredential == nil {
+		return nil, logical.ErrUnsupportedOperation
+	}
+
+	err := b.RotateCredential(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &logical.Response{}, nil
 }
 
 func (b *Backend) handleAuthRenew(ctx context.Context, req *logical.Request) (*logical.Response, error) {

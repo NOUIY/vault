@@ -5,12 +5,17 @@
 
 <PkiPageHeader @backend={{this.model.parentModel}} />
 
-<PkiPaginatedList @listRoute="certificates.index" @list={{this.model.certificates}} @hasConfig={{this.model.hasConfig}}>
+<PkiPaginatedList
+  @backend={{this.model.parentModel.id}}
+  @listRoute="certificates.index"
+  @list={{this.model.certificates}}
+  @hasConfig={{this.model.hasConfig}}
+>
   <:list as |certs|>
     {{#each certs as |pkiCertificate|}}
       <LinkedBlock
         class="list-item-row"
-        @params={{array "certificates.certificate.details" pkiCertificate.id}}
+        @params={{array "certificates.certificate.details" this.model.parentModel.id pkiCertificate.id}}
         @linkPrefix={{this.mountPoint}}
       >
         <div class="level is-mobile">
@@ -33,7 +38,10 @@
                   @hasChevron={{false}}
                   data-test-popup-menu-trigger
                 />
-                <dd.Interactive @text="Details" @route="certificates.certificate.details" @model={{pkiCertificate.id}} />
+                <dd.Interactive
+                  @route="certificates.certificate.details"
+                  @model={{pkiCertificate.id}}
+                >Details</dd.Interactive>
               </Hds::Dropdown>
             </div>
           </div>
@@ -54,6 +62,7 @@
         @iconPosition="trailing"
         @text="Configure PKI"
         @route="configuration.create"
+        @model={{this.model.parentModel.id}}
       />
     </EmptyState>
   </:configure>

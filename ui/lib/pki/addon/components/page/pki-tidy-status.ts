@@ -52,7 +52,7 @@ export default class PkiTidyStatusComponent extends Component<Args> {
   @service declare readonly secretMountPath: SecretMountPath;
   @service declare readonly flashMessages: FlashMessageService;
   @service declare readonly version: VersionService;
-  @service declare readonly router: RouterService;
+  @service('app-router') declare readonly router: RouterService;
 
   @tracked tidyOptionsModal = false;
   @tracked confirmCancelTidy = false;
@@ -67,6 +67,7 @@ export default class PkiTidyStatusComponent extends Component<Args> {
 
   tidyStatusConfigFields = [
     'tidy_cert_store',
+    'tidy_cert_metadata',
     'tidy_revoked_certs',
     'safety_buffer',
     'pause_duration',

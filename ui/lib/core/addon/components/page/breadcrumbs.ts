@@ -6,16 +6,10 @@
 import Component from '@glimmer/component';
 import { assert } from '@ember/debug';
 
+import type { Breadcrumb } from 'vault/vault/app-types';
+
 interface Args {
   breadcrumbs: Array<Breadcrumb>;
-}
-interface Breadcrumb {
-  label: string;
-  route?: string; // Do not provide for current route
-  icon?: string;
-  model?: string;
-  models?: string[];
-  linkToExternal?: boolean;
 }
 
 /**
@@ -23,9 +17,8 @@ interface Breadcrumb {
  * Page::Breadcrumbs components are used to display an array of breadcrumbs at the top of the page.
  *
  * @example
- * ```js
- * <Page::Breadcrumbs @breadcrumbs={{this.breadcrumbs}}  />
- * ```
+ * <Page::Breadcrumbs @breadcrumbs={{array (hash label="Home" route="vault") (hash label="my-secret")}}  />
+ *
  * @param {array} breadcrumbs - array of Breadcrumb objects, must contain a label key. If no route is provided, crumb is assumed to be the current page
  */
 

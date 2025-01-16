@@ -22,6 +22,12 @@ ifneq ($(FDB_ENABLED), )
 	BUILD_TAGS+=foundationdb
 endif
 
+# Set BUILD_MINIMAL to a non-empty value to build a minimal version of Vault with only core features.
+BUILD_MINIMAL ?=
+ifneq ($(strip $(BUILD_MINIMAL)),)
+	BUILD_TAGS+=minimal
+endif
+
 default: dev
 
 # bin generates the releasable binaries for Vault
@@ -39,6 +45,12 @@ dev-ui: assetcheck prep
 dev-dynamic: BUILD_TAGS+=testonly
 dev-dynamic: prep
 	@CGO_ENABLED=1 BUILD_TAGS='$(BUILD_TAGS)' VAULT_DEV_BUILD=1 sh -c "'$(CURDIR)/scripts/build.sh'"
+
+# quickdev creates binaries for testing Vault locally like dev, but skips
+# the prep step.
+quickdev: BUILD_TAGS+=testonly
+quickdev:
+	@CGO_ENABLED=$(CGO_ENABLED) BUILD_TAGS='$(BUILD_TAGS)' VAULT_DEV_BUILD=1 sh -c "'$(CURDIR)/scripts/build.sh'"
 
 # *-mem variants will enable memory profiling which will write snapshots of heap usage
 # to $TMP/vaultprof every 5 minutes. These can be analyzed using `$ go tool pprof <profile_file>`.
@@ -158,7 +170,7 @@ protolint: prep check-tools-external
 # now run as a pre-commit hook (and there's little value in
 # making every build run the formatter), we've removed that
 # dependency.
-prep: check-go-version
+prep: check-go-version clean
 	@echo "==> Running go generate..."
 	@GOARCH= GOOS= $(GO_CMD) generate $(MAIN_PACKAGES)
 	@GOARCH= GOOS= cd api && $(GO_CMD) generate $(API_PACKAGES)
@@ -174,7 +186,7 @@ hooks:
 
 # bootstrap the build by generating any necessary code and downloading additional tools that may
 # be used by devs.
-bootstrap: prep tools
+bootstrap: tools prep
 
 # Note: if you have plugins in GOPATH you can update all of them via something like:
 # for i in $(ls | grep vault-plugin-); do cd $i; git remote update; git reset --hard origin/master; dep ensure -update; git add .; git commit; git push; cd ..; done
@@ -291,6 +303,10 @@ check-tools-external:
 check-tools-internal:
 	@$(CURDIR)/tools/tools.sh check-internal
 
+.PHONY: check-tools-pipeline
+check-tools-pipeline:
+	@$(CURDIR)/tools/tools.sh check-pipeline
+
 check-vault-in-path:
 	@VAULT_BIN=$$(command -v vault) || { echo "vault command not found"; exit 1; }; \
 		[ -x "$$VAULT_BIN" ] || { echo "$$VAULT_BIN not executable"; exit 1; }; \
@@ -307,6 +323,10 @@ tools-external:
 .PHONY: tools-internal
 tools-internal:
 	@$(CURDIR)/tools/tools.sh install-internal
+
+.PHONY: tools-pipeline
+tools-pipeline:
+	@$(CURDIR)/tools/tools.sh install-pipeline
 
 mysql-database-plugin:
 	@CGO_ENABLED=0 $(GO_CMD) build -o bin/mysql-database-plugin ./plugins/database/mysql/mysql-database-plugin
@@ -362,17 +382,13 @@ ci-get-revision:
 ci-get-version-package:
 	@$(CURDIR)/scripts/ci-helper.sh version-package
 
-.PHONY: ci-install-external-tools
-ci-install-external-tools:
-	@$(CURDIR)/scripts/ci-helper.sh install-external-tools
+.PHONY: ci-prepare-ent-legal
+ci-prepare-ent-legal:
+	@$(CURDIR)/scripts/ci-helper.sh prepare-ent-legal
 
-.PHONY: ci-prepare-legal
-ci-prepare-legal:
-	@$(CURDIR)/scripts/ci-helper.sh prepare-legal
-
-.PHONY: ci-update-external-tool-modules
-ci-update-external-tool-modules:
-	@$(CURDIR)/scripts/ci-helper.sh update-external-tool-modules
+.PHONY: ci-prepare-ce-legal
+ci-prepare-ce-legal:
+	@$(CURDIR)/scripts/ci-helper.sh prepare-ce-legal
 
 .PHONY: ci-copywriteheaders
 ci-copywriteheaders:
@@ -389,3 +405,7 @@ ci-copywriteheaders:
 .PHONY: all-packages
 all-packages:
 	@echo $(ALL_PACKAGES) | tr ' ' '\n'
+
+.PHONY: clean
+clean:
+	@echo "==> Cleaning..."

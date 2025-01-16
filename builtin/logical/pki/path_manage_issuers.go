@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/vault/builtin/logical/pki/issuing"
+	"github.com/hashicorp/vault/builtin/logical/pki/revocation"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/helper/errutil"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -116,6 +117,7 @@ func buildPathGenerateRoot(b *backend, pattern string, displayAttrs *framework.D
 	ret.Fields = addCACommonFields(map[string]*framework.FieldSchema{})
 	ret.Fields = addCAKeyGenerationFields(ret.Fields)
 	ret.Fields = addCAIssueFields(ret.Fields)
+	ret.Fields = addCACertKeyUsage(ret.Fields)
 	return ret
 }
 
@@ -196,6 +198,7 @@ extension with CA: true. Only needed as a
 workaround in some compatibility scenarios
 with Active Directory Certificate Services.`,
 	}
+	ret.Fields = addCaCsrKeyUsage(ret.Fields)
 
 	// At this time Go does not support signing CSRs using PSS signatures, see
 	// https://github.com/golang/go/issues/45990
@@ -407,7 +410,7 @@ func (b *backend) pathImportIssuers(ctx context.Context, req *logical.Request, d
 	}
 
 	if len(createdIssuers) > 0 {
-		warnings, err := b.CrlBuilder().rebuild(sc, true)
+		warnings, err := b.CrlBuilder().Rebuild(sc, true)
 		if err != nil {
 			// Before returning, check if the error message includes the
 			// string "PSS". If so, it indicates we might've wanted to modify
@@ -513,6 +516,7 @@ secret-keys.
 
 func pathRevokeIssuer(b *backend) *framework.Path {
 	fields := addIssuerRefField(map[string]*framework.FieldSchema{})
+	responseFields := issuerResponseFields(true)
 
 	return &framework.Path{
 		Pattern: "issuer/" + framework.GenericNameRegex(issuerRefParam) + "/revoke",
@@ -531,83 +535,7 @@ func pathRevokeIssuer(b *backend) *framework.Path {
 				Responses: map[int][]framework.Response{
 					http.StatusOK: {{
 						Description: "OK",
-						Fields: map[string]*framework.FieldSchema{
-							"issuer_id": {
-								Type:        framework.TypeString,
-								Description: `ID of the issuer`,
-								Required:    true,
-							},
-							"issuer_name": {
-								Type:        framework.TypeString,
-								Description: `Name of the issuer`,
-								Required:    true,
-							},
-							"key_id": {
-								Type:        framework.TypeString,
-								Description: `ID of the Key`,
-								Required:    true,
-							},
-							"certificate": {
-								Type:        framework.TypeString,
-								Description: `Certificate`,
-								Required:    true,
-							},
-							"manual_chain": {
-								Type:        framework.TypeCommaStringSlice,
-								Description: `Manual Chain`,
-								Required:    true,
-							},
-							"ca_chain": {
-								Type:        framework.TypeCommaStringSlice,
-								Description: `Certificate Authority Chain`,
-								Required:    true,
-							},
-							"leaf_not_after_behavior": {
-								Type:        framework.TypeString,
-								Description: ``,
-								Required:    true,
-							},
-							"usage": {
-								Type:        framework.TypeString,
-								Description: `Allowed usage`,
-								Required:    true,
-							},
-							"revocation_signature_algorithm": {
-								Type:        framework.TypeString,
-								Description: `Which signature algorithm to use when building CRLs`,
-								Required:    true,
-							},
-							"revoked": {
-								Type:        framework.TypeBool,
-								Description: `Whether the issuer was revoked`,
-								Required:    true,
-							},
-							"issuing_certificates": {
-								Type:        framework.TypeCommaStringSlice,
-								Description: `Specifies the URL values for the Issuing Certificate field`,
-								Required:    true,
-							},
-							"crl_distribution_points": {
-								Type:        framework.TypeStringSlice,
-								Description: `Specifies the URL values for the CRL Distribution Points field`,
-								Required:    true,
-							},
-							"ocsp_servers": {
-								Type:        framework.TypeStringSlice,
-								Description: `Specifies the URL values for the OCSP Servers field`,
-								Required:    true,
-							},
-							"revocation_time": {
-								Type:        framework.TypeInt64,
-								Description: `Time of revocation`,
-								Required:    false,
-							},
-							"revocation_time_rfc3339": {
-								Type:        framework.TypeTime,
-								Description: `RFC formatted time of revocation`,
-								Required:    false,
-							},
-						},
+						Fields:      responseFields,
 					}},
 				},
 				// Read more about why these flags are set in backend.go
@@ -677,7 +605,7 @@ func (b *backend) pathRevokeIssuer(ctx context.Context, req *logical.Request, da
 
 	// Now, if the parent issuer exists within this mount, we'd have written
 	// a storage entry for this certificate, making it appear as any other
-	// leaf. We need to add a revocationInfo entry for this into storage,
+	// leaf. We need to add a RevocationInfo entry for this into storage,
 	// so that it appears as if it was revoked.
 	//
 	// This is a _necessary_ but not necessarily _sufficient_ step to
@@ -688,7 +616,7 @@ func (b *backend) pathRevokeIssuer(ctx context.Context, req *logical.Request, da
 	// include both in two separate CRLs. Hence, the former is the condition
 	// we check in CRL building, but this step satisfies other guarantees
 	// within Vault.
-	certEntry, err := fetchCertBySerial(sc, "certs/", issuer.SerialNumber)
+	certEntry, err := fetchCertBySerial(sc, issuing.PathCerts, issuer.SerialNumber)
 	if err == nil && certEntry != nil {
 		// We've inverted this error check as it doesn't matter; we already
 		// consider this certificate revoked.
@@ -712,7 +640,7 @@ func (b *backend) pathRevokeIssuer(ctx context.Context, req *logical.Request, da
 			//
 			// We'll let a cleanup pass or CRL build identify the issuer for
 			// us.
-			revInfo := revocationInfo{
+			revInfo := revocation.RevocationInfo{
 				CertificateBytes:  issuerCert.Raw,
 				RevocationTime:    issuer.RevocationTime,
 				RevocationTimeUTC: issuer.RevocationTimeUTC,
@@ -731,7 +659,7 @@ func (b *backend) pathRevokeIssuer(ctx context.Context, req *logical.Request, da
 	}
 
 	// Rebuild the CRL to include the newly revoked issuer.
-	warnings, crlErr := b.CrlBuilder().rebuild(sc, false)
+	warnings, crlErr := b.CrlBuilder().Rebuild(sc, false)
 	if crlErr != nil {
 		switch crlErr.(type) {
 		case errutil.UserError:

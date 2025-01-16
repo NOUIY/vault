@@ -18,9 +18,11 @@
             />
           </:logo>
           <:actions>
-            <Hds::SideNav::Header::IconButton
+            <Hds::Button
+              @isIconOnly={{true}}
+              @size="large"
               @icon="terminal-screen"
-              @ariaLabel="Console toggle"
+              @text="Console toggle"
               data-test-console-toggle
               {{on "click" (fn (mut this.console.isOpen) (not this.console.isOpen))}}
             />
@@ -49,7 +51,14 @@
     <LinkStatus @status={{this.currentCluster.cluster.hcpLinkStatus}} />
     {{yield}}
     <div data-test-console-panel class={{if this.console.isOpen "panel-open"}}>
-      <Console::UiPanel @isFullscreen={{this.consoleFullscreen}} />
+      {{#if this.console.isOpen}}
+        <Console::UiPanel
+          @isFullscreen={{this.consoleFullscreen}}
+          {{focus-trap
+            focusTrapOptions=(hash initialFocus="#console-input" clickOutsideDeactivates=true onDeactivate=this.closeConsole)
+          }}
+        />
+      {{/if}}
     </div>
   </Frame.Main>
 </Hds::AppFrame>

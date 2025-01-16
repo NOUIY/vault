@@ -10,7 +10,7 @@ import { setupMirage } from 'ember-cli-mirage/test-support';
 import { render, click } from '@ember/test-helpers';
 import hbs from 'htmlbars-inline-precompile';
 import { duration } from 'core/helpers/format-duration';
-import { createSecretsEngine, generateBreadcrumbs } from 'vault/tests/helpers/ldap';
+import { createSecretsEngine, generateBreadcrumbs } from 'vault/tests/helpers/ldap/ldap-helpers';
 import { setRunOptions } from 'ember-a11y-testing/test-support';
 
 const selectors = {
@@ -68,7 +68,7 @@ module('Integration | Component | ldap | Page::Configuration', function (hooks) 
 
     await this.renderComponent();
 
-    assert.dom('.title svg').hasClass('flight-icon-folder-users', 'LDAP icon renders in title');
+    assert.dom('.title svg').hasClass('hds-icon-folder-users', 'LDAP icon renders in title');
     assert.dom('.title').hasText('ldap-test', 'Mount path renders in title');
     assert
       .dom(selectors.rotateAction)

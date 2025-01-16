@@ -43,7 +43,7 @@
                 {{or val.label val.value val}}
                 {{#if val.helpText}}
                   <Hds::TooltipButton @text={{val.helpText}} aria-label="More information">
-                    <FlightIcon @name="info" />
+                    <Hds::Icon @name="info" @isInline={{true}} />
                   </Hds::TooltipButton>
                 {{/if}}
                 {{#if this.hasRadioSubText}}
@@ -247,7 +247,7 @@
     <MaskedInput
       @name={{@attr.name}}
       @value={{or (get @model this.valuePath) @attr.options.defaultValue}}
-      @allowCopy="true"
+      @allowCopy={{if @attr.options.noCopy false true}}
       @onChange={{this.setAndBroadcast}}
       @onKeyUp={{@onKeyUp}}
     />
@@ -322,6 +322,7 @@
           disabled={{and @attr.options.editDisabled (not @model.isNew)}}
           autocomplete="off"
           spellcheck="false"
+          placeholder={{@attr.options.placeholder}}
           value={{get @model this.valuePath}}
           {{on "change" this.onChangeWithEvent}}
           {{on "input" this.onChangeWithEvent}}

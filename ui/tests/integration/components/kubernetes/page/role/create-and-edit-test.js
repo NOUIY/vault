@@ -40,16 +40,14 @@ module('Integration | Component | kubernetes | Page::Role::CreateAndEdit', funct
     this.newModel = store.createRecord('kubernetes/role', { backend: 'kubernetes-test' });
     this.breadcrumbs = [
       { label: this.newModel.backend, route: 'overview' },
-      { label: 'roles', route: 'roles' },
-      { label: 'create' },
+      { label: 'Roles', route: 'roles' },
+      { label: 'Create' },
     ];
     setRunOptions({
       rules: {
         // TODO: fix RadioCard component (replace with HDS)
         'aria-valid-attr-value': { enabled: false },
         'nested-interactive': { enabled: false },
-        // TODO: fix JSONEditor/CodeMirror
-        label: { enabled: false },
       },
     });
   });

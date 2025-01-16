@@ -27,10 +27,7 @@ const displayFields = [
 @withFormFields(inputFields, displayFields)
 export default class PkiIssuerModel extends Model {
   @service secretMountPath;
-  // TODO use openAPI after removing route extension (see pki/roles route for example)
-  get useOpenAPI() {
-    return false;
-  }
+
   get backend() {
     return this.secretMountPath.currentPath;
   }
@@ -66,7 +63,7 @@ export default class PkiIssuerModel extends Model {
       'What happens when a leaf certificate is issued, but its NotAfter field (and therefore its expiry date) exceeds that of this issuer.',
     docLink: '/vault/api-docs/secret/pki#update-issuer',
     editType: 'yield',
-    valueOptions: ['err', 'truncate', 'permit'],
+    valueOptions: ['always_enforce_err', 'err', 'truncate', 'permit'],
   })
   leafNotAfterBehavior;
 

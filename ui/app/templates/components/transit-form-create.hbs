@@ -5,7 +5,7 @@
 
 <form data-test-transit-create-form onsubmit={{@createOrUpdateKey}}>
   <div class="box is-sideless is-fullwidth is-marginless">
-    <MessageError @model={{@key}} />
+    <MessageError @model={{@key}} @errorMessage={{@errorMessage}} />
     <NamespaceReminder @mode="create" @noun="transit key" />
     <div class="field">
       <label for="key-name" class="is-label">Name</label>
@@ -126,13 +126,18 @@
   <div class="field is-grouped box is-fullwidth is-bottomless">
     <Hds::ButtonSet>
       <Hds::Button
-        @text="Create encryption key"
+        @text="Create key"
         @icon={{if @requestInFlight "loading"}}
         data-test-transit-key="create"
         type="submit"
         disabled={{@requestInFlight}}
       />
-      <Hds::Button @text="Cancel" @color="secondary" @route="vault.cluster.secrets.backend.list-root" />
+      <Hds::Button
+        @text="Cancel"
+        @color="secondary"
+        @model={{@key.backend}}
+        @route="vault.cluster.secrets.backend.list-root"
+      />
     </Hds::ButtonSet>
   </div>
 </form>

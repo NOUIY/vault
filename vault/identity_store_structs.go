@@ -58,8 +58,9 @@ type IdentityStore struct {
 	db *memdb.MemDB
 
 	// locks to make sure things are consistent
-	lock     sync.RWMutex
-	oidcLock sync.RWMutex
+	lock             sync.RWMutex
+	oidcLock         sync.RWMutex
+	generateJWKSLock sync.Mutex
 
 	// groupLock is used to protect modifications to group entries
 	groupLock sync.RWMutex
@@ -109,6 +110,8 @@ type IdentityStore struct {
 	// aliasLocks is used to protect modifications to alias entries based on the uniqueness factor
 	// which is name + accessor
 	aliasLocks []*locksutil.LockEntry
+
+	conflictResolver ConflictResolver
 }
 
 type groupDiff struct {

@@ -435,8 +435,11 @@ func (c *Core) setupExpiration(e ExpireLeaseStrategy) error {
 	return nil
 }
 
-// stopExpiration is used to stop the expiration manager before
-// sealing the Vault.
+// stopExpiration is used to stop the expiration manager before sealing Vault.
+// This *must* be called after shutting down the ActivityLog and
+// CensusManager to prevent Core's expirationManager reference from
+// changing while being accessed by product usage reporting. This is
+// an unfortunate side-effect of tight coupling between ActivityLog and Core.
 func (c *Core) stopExpiration() error {
 	if c.expiration != nil {
 		if err := c.expiration.Stop(); err != nil {
@@ -2013,7 +2016,9 @@ func (m *ExpirationManager) renewAuthEntry(ctx context.Context, req *logical.Req
 	return resp, nil
 }
 
-// loadEntry is used to read a lease entry
+// loadEntry is used to read a lease entry.
+// NOTE: loadEntry will return nil for both the pointer to a leaseEntry and the error when
+// the entry is not found, so callers should check the entry before attempting to access its fields.
 func (m *ExpirationManager) loadEntry(ctx context.Context, leaseID string) (*leaseEntry, error) {
 	// Take out the lease locks after we ensure we are in restore mode
 	restoreMode := m.inRestoreMode()

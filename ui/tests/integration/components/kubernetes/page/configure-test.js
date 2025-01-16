@@ -34,9 +34,9 @@ module('Integration | Component | kubernetes | Page::Configure', function (hooks
     });
     this.editModel = this.store.peekRecord('kubernetes/config', 'kubernetes-edit');
     this.breadcrumbs = [
-      { label: 'secrets', route: 'secrets', linkExternal: true },
+      { label: 'Secrets', route: 'secrets', linkExternal: true },
       { label: 'kubernetes', route: 'overview' },
-      { label: 'configure' },
+      { label: 'Configure' },
     ];
     this.expectedInferred = {
       disable_local_ca_jwt: false,

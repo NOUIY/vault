@@ -8,7 +8,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -30,6 +29,7 @@ import (
 	"github.com/hashicorp/vault/helper/namespace"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/helper/consts"
+	"github.com/hashicorp/vault/sdk/helper/cryptoutil"
 	"github.com/hashicorp/vault/sdk/helper/identitytpl"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/patrickmn/go-cache"
@@ -1762,7 +1762,7 @@ func generateKeys(algorithm string) (*jose.JSONWebKey, error) {
 	switch algorithm {
 	case "RS256", "RS384", "RS512":
 		// 2048 bits is recommended by RSA Laboratories as a minimum post 2015
-		if key, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
+		if key, err = cryptoutil.GenerateRSAKey(rand.Reader, 2048); err != nil {
 			return nil, err
 		}
 	case "ES256", "ES384", "ES512":
@@ -1849,6 +1849,20 @@ func (i *IdentityStore) generatePublicJWKS(ctx context.Context, s logical.Storag
 	}
 
 	jwksRaw, ok, err := i.oidcCache.Get(ns, "jwks")
+	if err != nil {
+		return nil, err
+	}
+
+	if ok {
+		return jwksRaw.(*jose.JSONWebKeySet), nil
+	}
+
+	i.generateJWKSLock.Lock()
+	defer i.generateJWKSLock.Unlock()
+
+	// Check the cache again incase another requset acquired the lock
+	// before this request.
+	jwksRaw, ok, err = i.oidcCache.Get(ns, "jwks")
 	if err != nil {
 		return nil, err
 	}

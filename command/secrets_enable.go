@@ -23,25 +23,27 @@ var (
 type SecretsEnableCommand struct {
 	*BaseCommand
 
-	flagDescription               string
-	flagPath                      string
-	flagDefaultLeaseTTL           time.Duration
-	flagMaxLeaseTTL               time.Duration
-	flagAuditNonHMACRequestKeys   []string
-	flagAuditNonHMACResponseKeys  []string
-	flagListingVisibility         string
-	flagPassthroughRequestHeaders []string
-	flagAllowedResponseHeaders    []string
-	flagForceNoCache              bool
-	flagPluginName                string
-	flagPluginVersion             string
-	flagOptions                   map[string]string
-	flagLocal                     bool
-	flagSealWrap                  bool
-	flagExternalEntropyAccess     bool
-	flagVersion                   int
-	flagAllowedManagedKeys        []string
-	flagIdentityTokenKey          string
+	flagDescription                string
+	flagPath                       string
+	flagDefaultLeaseTTL            time.Duration
+	flagMaxLeaseTTL                time.Duration
+	flagAuditNonHMACRequestKeys    []string
+	flagAuditNonHMACResponseKeys   []string
+	flagListingVisibility          string
+	flagPassthroughRequestHeaders  []string
+	flagAllowedResponseHeaders     []string
+	flagForceNoCache               bool
+	flagPluginName                 string
+	flagPluginVersion              string
+	flagOptions                    map[string]string
+	flagLocal                      bool
+	flagSealWrap                   bool
+	flagExternalEntropyAccess      bool
+	flagVersion                    int
+	flagAllowedManagedKeys         []string
+	flagDelegatedAuthAccessors     []string
+	flagIdentityTokenKey           string
+	flagTrimRequestTrailingSlashes BoolPtr
 }
 
 func (c *SecretsEnableCommand) Synopsis() string {
@@ -229,11 +231,25 @@ func (c *SecretsEnableCommand) Flags() *FlagSets {
 			"each time with 1 key.",
 	})
 
+	f.StringSliceVar(&StringSliceVar{
+		Name:   flagNameDelegatedAuthAccessors,
+		Target: &c.flagDelegatedAuthAccessors,
+		Usage: "A list of permitted authentication accessors this backend can delegate authentication to. " +
+			"Note that multiple values may be specified by providing this option multiple times, " +
+			"each time with 1 accessor.",
+	})
+
 	f.StringVar(&StringVar{
 		Name:    flagNameIdentityTokenKey,
 		Target:  &c.flagIdentityTokenKey,
 		Default: "default",
 		Usage:   "Select the key used to sign plugin identity tokens.",
+	})
+
+	f.BoolPtrVar(&BoolPtrVar{
+		Name:   flagNameTrimRequestTrailingSlashes,
+		Target: &c.flagTrimRequestTrailingSlashes,
+		Usage:  "Whether to trim trailing slashes for incoming requests to this mount",
 	})
 
 	return set
@@ -339,12 +355,21 @@ func (c *SecretsEnableCommand) Run(args []string) int {
 			mountInput.Config.AllowedManagedKeys = c.flagAllowedManagedKeys
 		}
 
+		if fl.Name == flagNameDelegatedAuthAccessors {
+			mountInput.Config.DelegatedAuthAccessors = c.flagDelegatedAuthAccessors
+		}
+
 		if fl.Name == flagNamePluginVersion {
 			mountInput.Config.PluginVersion = c.flagPluginVersion
 		}
 
 		if fl.Name == flagNameIdentityTokenKey {
 			mountInput.Config.IdentityTokenKey = c.flagIdentityTokenKey
+		}
+
+		if fl.Name == flagNameTrimRequestTrailingSlashes && c.flagTrimRequestTrailingSlashes.IsSet() {
+			val := c.flagTrimRequestTrailingSlashes.Get()
+			mountInput.Config.TrimRequestTrailingSlashes = &val
 		}
 	})
 
